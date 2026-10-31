@@ -1,0 +1,20 @@
+{
+  "name": "longshang-fresh",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node scripts/check.mjs",
+    "start": "node scripts/server.mjs"
+  },
+  "description": "Local-specialty marketplace demo from Jingtai, Gansu",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yegeli/longshang-fresh.git"
+  }
+}
