@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#31553f">
+  <title>经营概览 · 陇上鲜集管理后台</title>
+  <link rel="stylesheet" href="./admin.css?v=4">
+</head>
+<body>
+  <div class="admin-shell">
+    <aside class="sidebar" aria-label="管理导航">
+      <a class="brand" href="./admin.html"><span class="brand-mark">陇</span><span>陇上鲜集<small>店铺管理工作台</small></span></a>
+      <div class="sidebar-label">经营工作台</div>
+      <nav id="admin-nav" class="admin-nav" aria-label="管理栏目">
+        <button data-view="overview" class="active">经营概览</button>
+        <button data-view="products">商品管理</button>
+        <button data-view="orders">订单管理</button>
+        <button data-view="aftersales">售后管理</button>
+      </nav>
+      <div class="sidebar-bottom"><span class="status-dot"></span>本浏览器演示空间<p>商品、订单与本机素材保存在当前浏览器，不会同步到服务器。</p></div>
+    </aside>
+    <div class="admin-workspace">
+      <header class="topbar"><div><span class="breadcrumb">陇上鲜集 / 管理后台</span><h1 id="view-title">经营概览</h1></div><a class="buyer-link" href="./?v=4#/home" target="_blank" rel="noopener">查看买家页面 <span aria-hidden="true">↗</span></a></header>
+      <div class="demo-notice"><span>演示工作台</span><p>仅操作本浏览器中的示例数据，不会真实收款、退款或发货。</p></div>
+      <div id="admin-alerts" class="alert-region" aria-live="polite"></div>
+      <main id="admin-app" tabindex="-1"><div class="initial-state">正在读取本浏览器中的店铺数据…</div></main>
+      <footer class="workspace-footer">陇上鲜集 · 从景泰起步，把每一份好物认真打理。</footer>
+    </div>
+  </div>
+  <div id="drawer-root"></div>
+  <div id="admin-toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="./admin.js?v=4"></script>
+</body>
+</html>
