@@ -1,0 +1,37 @@
+{
+  "project": "景泰苹果小程序浏览器演示",
+  "verified_date": "2026-10-31",
+  "display_notice": "图片为演示素材，非景泰实拍；正式上架前请替换为实际供货照片。",
+  "license": {
+    "name": "Unsplash License",
+    "url": "https://unsplash.com/license",
+    "verified_summary": "官方许可页允许免费下载并用于商业及非商业用途；不允许将未作显著修改的图片作为图片本身售卖，亦不允许汇编以复制同类图片服务。",
+    "verification": "两张照片的官方详情页均明确标注 Free to use under the Unsplash License。"
+  },
+  "images": [
+    {
+      "file": "apples-hero.jpg",
+      "role": "苹果主视觉",
+      "title": "Three red apples on brown surface",
+      "photographer": "Roberta Sorge",
+      "photographer_url": "https://unsplash.com/@robertina",
+      "source_page": "https://unsplash.com/photos/three-red-apples-on-brown-surface-fDUj3kXilHQ",
+      "download_url": "https://images.unsplash.com/photo-1477830530828-c849c4b9bf2d?auto=format&fit=crop&fm=jpg&q=85&w=1600",
+      "source_publication_date": "2016-10-30",
+      "attribution": "Photo by Roberta Sorge on Unsplash",
+      "use_limit": "仅作商品页面模拟素材，不代表实际售卖苹果的品种、等级、产地或质量。"
+    },
+    {
+      "file": "apple-orchard.jpg",
+      "role": "苹果果园场景",
+      "title": "An apple tree filled with lots of ripe fruit",
+      "photographer": "Ally Griffin",
+      "photographer_url": "https://unsplash.com/@studio_a",
+      "source_page": "https://unsplash.com/photos/an-apple-tree-filled-with-lots-of-ripe-fruit-L-CSbQzmyI4",
+      "download_url": "https://images.unsplash.com/photo-1730592976122-61653bb61967?auto=format&fit=crop&fm=jpg&q=85&w=1600",
+      "source_publication_date": "2024-11-03",
+      "attribution": "Photo by Ally Griffin on Unsplash",
+      "use_limit": "仅作果园场景演示素材，未核实拍摄地点，不得称为景泰或供货农场实拍。"
+    }
+  ]
+}

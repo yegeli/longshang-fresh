@@ -1,0 +1,39 @@
+{
+  "title": "苹果采摘过程演示",
+  "video_file": "apple-harvest.mp4",
+  "poster_file": "apple-harvest-poster.jpg",
+  "source": {
+    "provider": "Pexels",
+    "author": "Everett Bumstead",
+    "asset_id": "19666849",
+    "asset_title": "Apple Picking on the Orchard Trees",
+    "asset_page": "https://www.pexels.com/video/apple-picking-on-the-orchard-trees-19666849/",
+    "download_url": "https://videos.pexels.com/video-files/19666849/19666849-hd_1280_720_24fps.mp4",
+    "published_date": "2023-12-29",
+    "retrieved_date": "2026-10-31",
+    "original_download_duration_seconds": 22.121667
+  },
+  "license": {
+    "name": "Pexels License",
+    "url": "https://www.pexels.com/license/",
+    "verified_date": "2026-10-31",
+    "basis": "素材官方页标记 Free；官方许可允许免费下载、使用和修改照片及视频，并列举网站、应用和电商用途。不得暗示画面中的人物或品牌为本产品背书，也不得将素材作为图库素材再次分发或出售。",
+    "attribution": "Video by Everett Bumstead on Pexels"
+  },
+  "output": {
+    "duration_seconds": 22.063708,
+    "size_bytes": 7312524,
+    "width": 1280,
+    "height": 720,
+    "video_codec": "H.264",
+    "pixel_format": "yuv420p",
+    "audio": "none",
+    "web_optimized": "MP4 faststart",
+    "processing": "保留原片正常播放速度和完整采摘过程；重新编码压缩并移除原音轨；在输出视频7.1秒提取封面。",
+    "poster_frame_seconds": 7.1
+  },
+  "visual_verification": "已查看约0秒、7秒、14秒抽帧及输出封面，确认画面为果园中手工采摘红苹果并使用采收袋的真实拍摄素材。",
+  "display_notice": "采摘过程演示素材，非景泰实拍。",
+  "usage_limit": "素材仅供浏览器演示介绍一般苹果采摘过程；不代表实际供货农户、产地、苹果品种、等级或生产方式，片中人物不为该商品背书。正式交易页面应替换或补充实际货源拍摄内容。",
+  "repository_notice": "历史托管演示的视频来源记录。开源仓库不附带该视频及封面文件；请通过管理后台选择自己拍摄或已获相应用途授权的本地视频。此记录不构成再分发授权。"
+}
