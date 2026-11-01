@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as model from '../public/model.js';
 import { esc, icon } from '../public/ui.js';
+import { createJourney } from '../public/journey.js';
+import { localStorefront } from '../public/storefront-data.js';
 
 // Execute the shipped buyer controller with a small DOM adapter. These checks
 // exercise its asynchronous click/submit paths without controlling a browser.
 const source=(await readFile(new URL('../public/app.js',import.meta.url),'utf8')).replace(/^import .*;\n/gm,'');
 const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
-const run=new AsyncFunction('deps',`with(deps){${source}\nreturn {createBuyerCloudOrder,refreshBuyerOrders,render,cloudOrderGate,cloudOrderNotice,getPendingCloudOrder,miniProduct,afterSale,afterSaleProgress,getOrders:()=>orders,inventoryPanel,checkout,getDraft:()=>afterDraft,setDraft:value=>{afterDraft=value;},setOrders:value=>{orders=value;ordersReady=true;},getElement:()=>app};}`);
+const run=new AsyncFunction('deps',`with(deps){${source}\nreturn {nav,route,productBack,backRoute,createBuyerCloudOrder,refreshBuyerOrders,render,cloudOrderGate,cloudOrderNotice,getPendingCloudOrder,miniProduct,afterSale,afterSaleProgress,getOrders:()=>orders,inventoryPanel,checkout,getDraft:()=>afterDraft,setDraft:value=>{afterDraft=value;},setOrders:value=>{orders=value;ordersReady=true;},getElement:()=>app};}`);
 const copy=value=>JSON.parse(JSON.stringify(value));
 function element(){return {innerHTML:'',dataset:{},scrollTop:0,hidden:false,children:{length:0},classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[],querySelector:()=>null,focus(){}};}
 function makeOrder(id='DEMO-CLOUD-ONE',version=1){
@@ -19,20 +21,25 @@ async function harness({user={id:'buyer-one',name:'模拟买家'},orders=[],quot
   const elements=new Map(['#app','#tabbar','#modal-root','#catalog-sync','#toast','.workspace'].map(key=>[key,element()]));
   const events={},windowEvents={},sessionValues=new Map(),requests=[],localOrderReads=[];
   let currentUser=user,currentOrders=copy(orders),submitCount=0,quoteCount=0,orderReader;
+  let directory={...localStorefront(model.BASE_CATALOG),ready:true,error:''};
+  const getStorefrontState=()=>copy(directory);
+  const shopForProduct=id=>directory.shops.find(shop=>shop.productIds.includes(id))||null;
+  const regionForProduct=id=>directory.regions.find(region=>region.productIds.includes(id))||null;
   const sessionStorage={getItem:key=>sessionValues.get(key)||null,setItem:(key,value)=>{if(storageFails)throw new Error('blocked');sessionValues.set(key,value);},removeItem:key=>sessionValues.delete(key)};
   const document={querySelector:key=>elements.get(key)||null,querySelectorAll:()=>[],addEventListener:(name,fn)=>{events[name]=fn;},activeElement:{matches:()=>false},hidden:false,title:'',createElement:()=>element()};
-  const location={hash:'#/home',origin:'https://example.test'};
+  let hash='#/home';const location={get hash(){return hash;},set hash(value){hash=value.startsWith('#')?value:'#'+value;},origin:'https://example.test'};
   const cloud=()=>({mode:'cloud',session:{user:currentUser,canManage:false},lastSyncedAt:'',error:''});
   const deps={...model,esc,icon,document,location,window:{addEventListener:(name,fn)=>{windowEvents[name]=fn;}},sessionStorage,localStorage:{getItem:key=>{if(key===model.STORAGE_KEY)localOrderReads.push(key);return null;},setItem(){throw new Error('Cloud orders must not write localStorage');}},setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,crypto:globalThis.crypto,
+    refreshStorefront:async()=>getStorefrontState(),getStorefrontState,shopForProduct,regionForProduct,createJourney:api=>createJourney({...api,getStorefrontState}),
     refreshBuyerInventory:async()=>{},inventoryFor:()=>batch,availability:()=>({available:stock>0,stock,message:stock?'可售20份':'该规格暂时缺货'}),inventoryFingerprint:()=>'',initializeCatalog:async()=>model.BASE_CATALOG,readCatalog:()=>model.BASE_CATALOG,refreshCatalog:async()=>model.BASE_CATALOG,CATALOG_KEY:'catalog',hydrateMedia:async()=>[],imageFor:p=>p?.image||'assets/apples.jpg',videoFor:()=>'',mediaErrorFor:()=>'',isCloudMode:()=>true,getCloudState:cloud,initializeCloudMode:async()=>cloud(),
     loadCloudOrders:async()=>orderReader?orderReader():({orders:copy(currentOrders),lastSyncedAt:new Date().toISOString()}),loadCloudOrder:async id=>{const order=currentOrders.find(value=>value.id===id);if(!order)throw Object.assign(new Error('not found'),{status:404});return copy(order);},
     quoteCloudOrder:async(items,address)=>{quoteCount++;return {total:quotedTotal,items:items.map(item=>({...item,...(quotedBatchId?{batchId:quotedBatchId}: {})})),address,productVersions:{'jingtai-apple':1},inventoryVersions:{'jingtai-apple':4}};},createOrderRequestKey:()=>`ORDER-test-${++submitCount}`,
     submitCloudOrder:async request=>{requests.push(copy(request));return submit?submit(request,requests.length):makeOrder();},mutateCloudOrder:async(...args)=>{requests.push(args);return mutate?mutate(...args):makeOrder(args[0],2);},
-    createExperience:()=>({decorateHome:html=>html,beforeRender(){},routes:{mine:()=>'<p>我的</p>'},handleClick:()=>false,handleSubmit:()=>false,handleChange:()=>false,storage(){},refresh(){},count:()=>0,removeOrderedItems(){}}),
+    createExperience:()=>({detailExtras:()=>'',productBar:()=>'',decorateHome:html=>html,beforeRender(){},routes:{mine:()=>'<p>我的</p>'},handleClick:()=>false,handleSubmit:()=>false,handleChange:()=>false,storage(){},refresh(){},count:()=>0,removeOrderedItems(){}}),
     FormData:class{constructor(form){this.values=form.fields||{};}get(key){return this.values[key]??null;}}
   };
   const api=await run(deps);await new Promise(resolve=>setImmediate(resolve));
-  return {...api,events,windowEvents,requests,localOrderReads,sessionValues,location,elements,setUser:value=>{currentUser=value;},setServerOrders:value=>{currentOrders=copy(value);},setOrderReader:value=>{orderReader=value;},counts:()=>({quoteCount,keys:submitCount})};
+  return {...api,setDirectory:value=>{directory=value;},getDirectory:()=>copy(directory),events,windowEvents,requests,localOrderReads,sessionValues,location,elements,setUser:value=>{currentUser=value;},setServerOrders:value=>{currentOrders=copy(value);},setOrderReader:value=>{orderReader=value;},counts:()=>({quoteCount,keys:submitCount})};
 }
 
 test('buyer cloud orders require login and never read local order storage',async()=>{
@@ -135,7 +142,7 @@ function cartHarness(cloudMode=true){
   const storage={getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value)};
   const factory=loadExperience({...model,esc,icon,localStorage:storage,isCloudMode:()=>cloudMode,getCloudState:()=>({session:{user:{id:'buyer-one'}}}),imageFor:p=>p?.image,SPECIALTY_GUIDES:[],COLLECTIONS:[]});
   let fail=true,localOrders=0,path='cart-checkout';
-  const api={availability:()=>({available:true,stock:20,message:'可售20份'}),inventoryFor:()=>null,selection:{address:'gansu'},route:()=>[path],nav:value=>{path=value;},toast:value=>notices.push(value),render(){},updateTabs(){},title:()=>'',miniProduct:()=>'',newId:()=> 'DEMO-LOCAL-CART',addOrder:()=>{localOrders++;},createCloudOrder:async(...args)=>{calls.push(args);if(fail)throw new Error('temporary network failure');return makeOrder();}};
+  const api={getStorefrontState:()=>({ready:true,error:''}),shopForProduct:()=>({id:'shop-test',name:'模拟采购者',preview:false}),availability:()=>({available:true,stock:20,message:'可售20份'}),inventoryFor:()=>null,selection:{address:'gansu'},route:()=>[path],nav:value=>{path=value;},toast:value=>notices.push(value),render(){},updateTabs(){},title:()=>'',miniProduct:()=>'',newId:()=> 'DEMO-LOCAL-CART',addOrder:()=>{localOrders++;},createCloudOrder:async(...args)=>{calls.push(args);if(fail)throw new Error('temporary network failure');return makeOrder();}};
   const experience=factory(api);experience.routes['cart-checkout']();
   return {experience,values,initial,calls,notices,setFailure:value=>{fail=value;},localCount:()=>localOrders,getPath:()=>path};
 }
@@ -211,4 +218,61 @@ test('zero stock disables checkout and batch descriptions are escaped in product
   assert.match(panel,/该规格暂时缺货/);assert.match(panel,/&lt;script&gt;/);assert.ok(!panel.includes('<script>'));
   const item={...model.orderItems(makeOrder())[0],batchId:batch.batchId,batchCode:batch.batchCode,harvestDate:batch.harvestDate,batchNote:batch.note};
   assert.match(ui.miniProduct(item),/&lt;img/);
+});
+
+test('new cloud orders require one resolved shop; directory failure cannot block an uncertain retry',async()=>{
+  const ui=await harness({submit:(request,count)=>{if(count===1)throw Object.assign(new Error('uncertain'),{status:503});return makeOrder();}});
+  const original=ui.getDirectory(),items=[{productId:'jingtai-apple',variant:'small',quantity:1}];
+  ui.setDirectory({regions:[],shops:[],ready:true,error:'network failure'});
+  await assert.rejects(ui.createBuyerCloudOrder(items,'gansu',5590),/店铺暂时无法确认/);
+  assert.equal(ui.counts().quoteCount,0);
+  ui.setDirectory({...original,shops:[{id:'shop-a',productIds:['jingtai-apple'],preview:false},{id:'shop-b',productIds:['goji'],preview:false}]});
+  await assert.rejects(ui.createBuyerCloudOrder([...items,{productId:'goji',variant:'small',quantity:1}],'gansu',5590),/分开下单/);
+  assert.equal(ui.counts().quoteCount,0);
+  ui.setDirectory(original);
+  await assert.rejects(ui.createBuyerCloudOrder(items,'gansu',5590),/uncertain/);
+  ui.setDirectory({regions:[],shops:[],ready:true,error:'network failure'});
+  assert.equal((await ui.createBuyerCloudOrder(items,'gansu',5590)).id,'DEMO-CLOUD-ONE');
+  assert.deepEqual(ui.requests[0],ui.requests[1]);
+});
+
+test('region, shop and product navigation keeps the source, filter and scroll when returning',async()=>{
+  const ui=await harness();model.setCatalog(model.BASE_CATALOG);
+  async function click(dataset){
+    const button={dataset,disabled:false};
+    await ui.events.click({target:{classList:{contains:()=>false},closest:()=>button}});
+    ui.windowEvents.hashchange({});
+  }
+  await click({action:'navigate',route:'region/gansu-jingtai'});
+  assert.match(ui.getElement().innerHTML,/景泰/);
+  ui.getElement().scrollTop=311;
+  await click({action:'navigate',route:'shop/shop-local-demo'});
+  assert.equal(ui.backRoute('shop','shop-local-demo','shops'),'region/gansu-jingtai');
+  await ui.events.click({target:{classList:{contains:()=>false},closest:()=>({dataset:{action:'journey-shop-category',shop:'shop-local-demo',category:'fruit'}})}});
+  ui.getElement().scrollTop=527;
+  await click({action:'view-product',product:'jingtai-apple'});
+  assert.equal(ui.productBack('jingtai-apple'),'shop/shop-local-demo');
+  assert.match(ui.getElement().innerHTML,/journey-product-context/);
+  await click({action:'navigate',route:'region/gansu-jingtai'});
+  assert.equal(ui.backRoute('region','gansu-jingtai','regions'),'home','A product breadcrumb must not turn its ancestor into a child');
+  assert.equal(ui.getElement().scrollTop,311);
+  await click({action:'navigate',route:'shop/shop-local-demo'});
+  assert.equal(ui.backRoute('shop','shop-local-demo','shops'),'region/gansu-jingtai');
+  ui.getElement().scrollTop=527;
+  await click({action:'view-product',product:'jingtai-apple'});
+  await click({action:'back',route:ui.productBack('jingtai-apple')});
+  assert.equal(ui.getElement().scrollTop,527);
+  assert.match(ui.getElement().innerHTML,/data-category="fruit" class="is-selected"/);
+  await click({action:'back',route:ui.backRoute('shop','shop-local-demo','shops')});
+  assert.equal(ui.getElement().scrollTop,311);
+});
+
+test('search routes decode exactly once and malformed routes show a recovery page',async()=>{
+  const ui=await harness();model.setCatalog(model.BASE_CATALOG);
+  ui.location.hash='#/search/'+encodeURIComponent('苹果 100% / %25');ui.windowEvents.hashchange({});
+  assert.deepEqual(ui.route(),['search','苹果 100% / %25']);
+  assert.match(ui.getElement().innerHTML,/苹果 100% \/ %25/);
+  ui.location.hash='#/search/%invalid';ui.windowEvents.hashchange({});
+  assert.match(ui.getElement().innerHTML,/页面暂未找到/);
+  assert.ok(!ui.getElement().innerHTML.includes('journey-hero'));
 });
