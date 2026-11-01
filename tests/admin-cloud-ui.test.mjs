@@ -423,3 +423,14 @@ test('order cancellation release notices preserve the review message while escap
   const h=harness(),html=h.stockReleaseNotice({stockRelease:{status:'review',message:'旧批次 <script>bad</script> 需要核对'}});
   assert.match(html,/需要核对旧批次/);assert.match(html,/&lt;script&gt;bad&lt;\/script&gt;/);assert.ok(!html.includes('<script>bad</script>'));
 });
+
+test('merchant order view shows buyer receipt and cannot confirm it on the buyer behalf',async()=>{
+  const h=harness();
+  h.behavior.orders=[{...model.receiveOrder(model.shipOrder(original(),'模拟物流','DEMO-RECEIVED','2026-11-01T03:10:00.000Z'),'2026-11-01T03:20:00.000Z'),version:3}];
+  await h.boot();h.changeView('orders');
+  assert.match(h.nodes.get('#admin-app').innerHTML,/已完成/);
+  h.openDrawer('order','DEMO-ADMIN-UI');
+  const drawer=h.nodes.get('#drawer-root').innerHTML;
+  assert.match(drawer,/买家确认模拟收货于/);assert.doesNotMatch(drawer,/id="ship-form"/);
+  assert.doesNotMatch(drawer,/data-action="(?:confirm-receive|receive-order)"/);
+});

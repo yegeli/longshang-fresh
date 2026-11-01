@@ -147,3 +147,23 @@ export const inventoryEvents = sqliteTable('inventory_events', {
   check('inventory_event_before', sql`${table.beforeJson} is null or json_valid(${table.beforeJson})`),
   check('inventory_event_after', sql`json_valid(${table.afterJson})`)
 ]);
+
+// Account-owned shopping preferences contain IDs and example-region choices only.
+// A missing row is the read-only version-zero state; no login import or seed.
+export const buyerShopping = sqliteTable('buyer_shopping', {
+  userId: text('user_id').primaryKey().references(() => users.id),
+  stateJson: text('state_json').notNull(),
+  version: integer('version').notNull(),
+  updatedAt: text('updated_at').notNull()
+}, table => [
+  check('buyer_shopping_json', sql`json_valid(${table.stateJson}) and json_type(${table.stateJson}) = 'object'`),
+  check('buyer_shopping_version', sql`${table.version} >= 1 and ${table.version} <= 9007199254740991`)
+]);
+
+// Consuming a confirmed order and changing its buyer's cart share one transaction.
+// The marker survives future cart edits so replay cannot consume a later basket.
+export const buyerOrderConsumptions = sqliteTable('buyer_order_consumptions', {
+  orderId: text('order_id').primaryKey().references(() => orders.id),
+  buyerId: text('buyer_id').notNull().references(() => users.id),
+  createdAt: text('created_at').notNull()
+}, table => [index('buyer_order_consumptions_buyer').on(table.buyerId)]);

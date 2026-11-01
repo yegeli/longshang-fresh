@@ -10,18 +10,21 @@ import { localStorefront } from '../public/storefront-data.js';
 // exercise its asynchronous click/submit paths without controlling a browser.
 const source=(await readFile(new URL('../public/app.js',import.meta.url),'utf8')).replace(/^import .*;\n/gm,'');
 const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
-const run=new AsyncFunction('deps',`with(deps){${source}\nreturn {nav,route,productBack,backRoute,createBuyerCloudOrder,refreshBuyerOrders,render,cloudOrderGate,cloudOrderNotice,getPendingCloudOrder,miniProduct,afterSale,afterSaleProgress,getOrders:()=>orders,inventoryPanel,checkout,getDraft:()=>afterDraft,setDraft:value=>{afterDraft=value;},setOrders:value=>{orders=value;ordersReady=true;},getElement:()=>app};}`);
+const run=new AsyncFunction('deps',`with(deps){${source}\nreturn {nav,route,productBack,backRoute,cartCleanupConfirmed,syncBuyerShopping,answerFor,orderStatus,matchesFilter,orderDetail,orderList,canReceive,createBuyerCloudOrder,refreshBuyerOrders,render,cloudOrderGate,cloudOrderNotice,getPendingCloudOrder,miniProduct,afterSale,afterSaleProgress,getOrders:()=>orders,inventoryPanel,checkout,getDraft:()=>afterDraft,setDraft:value=>{afterDraft=value;},setOrders:value=>{orders=value;ordersReady=true;},getElement:()=>app};}`);
 const copy=value=>JSON.parse(JSON.stringify(value));
 function element(){return {innerHTML:'',dataset:{},scrollTop:0,hidden:false,children:{length:0},classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[],querySelector:()=>null,focus(){}};}
 function makeOrder(id='DEMO-CLOUD-ONE',version=1){
   model.setCatalog(model.BASE_CATALOG);
   return {...model.createOrder({productId:'jingtai-apple',variant:'small',quantity:1,address:'gansu'},id),version,updatedAt:new Date().toISOString()};
 }
-async function harness({user={id:'buyer-one',name:'模拟买家'},orders=[],quotedTotal=5590,submit,mutate,storageFails=false,stock=20,batch=null,quotedBatchId}={}){
+async function harness({user={id:'buyer-one',name:'模拟买家'},orders=[],quotedTotal=5590,submit,mutate,storageFails=false,stock=20,batch=null,quotedBatchId,cleanupDurable=true}={}){
   const elements=new Map(['#app','#tabbar','#modal-root','#catalog-sync','#toast','.workspace'].map(key=>[key,element()]));
-  const events={},windowEvents={},sessionValues=new Map(),requests=[],localOrderReads=[];
-  let currentUser=user,currentOrders=copy(orders),submitCount=0,quoteCount=0,orderReader;
+  const events={},windowEvents={},sessionValues=new Map(),requests=[],localOrderReads=[],cleanupPrepared=[];
+  let currentUser=user,currentOrders=copy(orders),submitCount=0,quoteCount=0,orderReader,inventoryReader=async()=>{},buyerReader;
   let directory={...localStorefront(model.BASE_CATALOG),ready:true,error:''};
+  let buyerState={cart:[],favorites:[],recent:[],preferredAddress:'gansu',accountId:user?.id||'',ready:!!user,error:'',version:0};
+  const getBuyerState=()=>copy(buyerState);
+  const refreshBuyerState=async()=>{buyerState=buyerReader?await buyerReader():{...buyerState,accountId:currentUser?.id||'',ready:!!currentUser};return getBuyerState();};
   const getStorefrontState=()=>copy(directory);
   const shopForProduct=id=>directory.shops.find(shop=>shop.productIds.includes(id))||null;
   const regionForProduct=id=>directory.regions.find(region=>region.productIds.includes(id))||null;
@@ -30,16 +33,17 @@ async function harness({user={id:'buyer-one',name:'模拟买家'},orders=[],quot
   let hash='#/home';const location={get hash(){return hash;},set hash(value){hash=value.startsWith('#')?value:'#'+value;},origin:'https://example.test'};
   const cloud=()=>({mode:'cloud',session:{user:currentUser,canManage:false},lastSyncedAt:'',error:''});
   const deps={...model,esc,icon,document,location,window:{addEventListener:(name,fn)=>{windowEvents[name]=fn;}},sessionStorage,localStorage:{getItem:key=>{if(key===model.STORAGE_KEY)localOrderReads.push(key);return null;},setItem(){throw new Error('Cloud orders must not write localStorage');}},setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,crypto:globalThis.crypto,
+    getBuyerState,refreshBuyerState,clearBuyerState:()=>{buyerState={...buyerState,cart:[],favorites:[],recent:[],ready:false};},mutateBuyerState:async transform=>{buyerState={...buyerState,...transform(copy(buyerState))};return getBuyerState();},
     refreshStorefront:async()=>getStorefrontState(),getStorefrontState,shopForProduct,regionForProduct,createJourney:api=>createJourney({...api,getStorefrontState}),
-    refreshBuyerInventory:async()=>{},inventoryFor:()=>batch,availability:()=>({available:stock>0,stock,message:stock?'可售20份':'该规格暂时缺货'}),inventoryFingerprint:()=>'',initializeCatalog:async()=>model.BASE_CATALOG,readCatalog:()=>model.BASE_CATALOG,refreshCatalog:async()=>model.BASE_CATALOG,CATALOG_KEY:'catalog',hydrateMedia:async()=>[],imageFor:p=>p?.image||'assets/apples.jpg',videoFor:()=>'',mediaErrorFor:()=>'',isCloudMode:()=>true,getCloudState:cloud,initializeCloudMode:async()=>cloud(),
+    refreshBuyerInventory:()=>inventoryReader(),inventoryFor:()=>batch,availability:()=>({available:stock>0,stock,message:stock?'可售20份':'该规格暂时缺货'}),inventoryFingerprint:()=>'',initializeCatalog:async()=>model.BASE_CATALOG,readCatalog:()=>model.BASE_CATALOG,refreshCatalog:async()=>model.BASE_CATALOG,CATALOG_KEY:'catalog',hydrateMedia:async()=>[],imageFor:p=>p?.image||'assets/apples.jpg',videoFor:()=>'',mediaErrorFor:()=>'',isCloudMode:()=>true,getCloudState:cloud,initializeCloudMode:async()=>cloud(),
     loadCloudOrders:async()=>orderReader?orderReader():({orders:copy(currentOrders),lastSyncedAt:new Date().toISOString()}),loadCloudOrder:async id=>{const order=currentOrders.find(value=>value.id===id);if(!order)throw Object.assign(new Error('not found'),{status:404});return copy(order);},
     quoteCloudOrder:async(items,address)=>{quoteCount++;return {total:quotedTotal,items:items.map(item=>({...item,...(quotedBatchId?{batchId:quotedBatchId}: {})})),address,productVersions:{'jingtai-apple':1},inventoryVersions:{'jingtai-apple':4}};},createOrderRequestKey:()=>`ORDER-test-${++submitCount}`,
     submitCloudOrder:async request=>{requests.push(copy(request));return submit?submit(request,requests.length):makeOrder();},mutateCloudOrder:async(...args)=>{requests.push(args);return mutate?mutate(...args):makeOrder(args[0],2);},
-    createExperience:()=>({detailExtras:()=>'',productBar:()=>'',decorateHome:html=>html,beforeRender(){},routes:{mine:()=>'<p>我的</p>'},handleClick:()=>false,handleSubmit:()=>false,handleChange:()=>false,storage(){},refresh(){},count:()=>0,removeOrderedItems(){}}),
+    createExperience:()=>({prepareOrderCleanup:(id,account)=>{cleanupPrepared.push({id,account});return cleanupDurable;},detailExtras:()=>'',productBar:()=>'',decorateHome:html=>html,beforeRender(){},routes:{mine:()=>'<p>我的</p>'},handleClick:()=>false,handleSubmit:()=>false,handleChange:()=>false,storage(){},refresh:refreshBuyerState,applyBuyerState(){},count:()=>0,removeOrderedItems(){}}),
     FormData:class{constructor(form){this.values=form.fields||{};}get(key){return this.values[key]??null;}}
   };
   const api=await run(deps);await new Promise(resolve=>setImmediate(resolve));
-  return {...api,setDirectory:value=>{directory=value;},getDirectory:()=>copy(directory),events,windowEvents,requests,localOrderReads,sessionValues,location,elements,setUser:value=>{currentUser=value;},setServerOrders:value=>{currentOrders=copy(value);},setOrderReader:value=>{orderReader=value;},counts:()=>({quoteCount,keys:submitCount})};
+  return {...api,setInventoryReader:value=>{inventoryReader=value;},setBuyerReader:value=>{buyerReader=value;},getBuyerState,cleanupPrepared,setBusy:value=>{document.activeElement.matches=()=>value;},setDirectory:value=>{directory=value;},getDirectory:()=>copy(directory),events,windowEvents,requests,localOrderReads,sessionValues,location,elements,setUser:value=>{currentUser=value;},setServerOrders:value=>{currentOrders=copy(value);},setOrderReader:value=>{orderReader=value;},counts:()=>({quoteCount,keys:submitCount})};
 }
 
 test('buyer cloud orders require login and never read local order storage',async()=>{
@@ -143,6 +147,10 @@ function cartHarness(cloudMode=true){
   const factory=loadExperience({...model,esc,icon,localStorage:storage,isCloudMode:()=>cloudMode,getCloudState:()=>({session:{user:{id:'buyer-one'}}}),imageFor:p=>p?.image,SPECIALTY_GUIDES:[],COLLECTIONS:[]});
   let fail=true,localOrders=0,path='cart-checkout';
   const api={getStorefrontState:()=>({ready:true,error:''}),shopForProduct:()=>({id:'shop-test',name:'模拟采购者',preview:false}),availability:()=>({available:true,stock:20,message:'可售20份'}),inventoryFor:()=>null,selection:{address:'gansu'},route:()=>[path],nav:value=>{path=value;},toast:value=>notices.push(value),render(){},updateTabs(){},title:()=>'',miniProduct:()=>'',newId:()=> 'DEMO-LOCAL-CART',addOrder:()=>{localOrders++;},createCloudOrder:async(...args)=>{calls.push(args);if(fail)throw new Error('temporary network failure');return makeOrder();}};
+  const state=()=>({cart:JSON.parse(values.get(model.CART_KEY)),favorites:[],recent:[],preferredAddress:'gansu',ready:true,error:'',accountId:'buyer-one',version:1});
+  api.getBuyerState=state;api.refreshBuyerState=async()=>state();
+  api.mutateBuyerState=async transform=>{const draft=state();const next=transform(draft)||draft;values.set(model.CART_KEY,JSON.stringify(next.cart));return state();};
+  api.consumeBuyerOrder=async()=>{const items=calls.at(-1)[0];values.set(model.CART_KEY,JSON.stringify(state().cart.flatMap(row=>{const ordered=items.find(item=>item.productId===row.productId&&item.variant===row.variant);return !ordered||!row.selected?[row]:row.quantity>ordered.quantity?[{...row,quantity:row.quantity-ordered.quantity}]:[];})));return state();};
   const experience=factory(api);experience.routes['cart-checkout']();
   return {experience,values,initial,calls,notices,setFailure:value=>{fail=value;},localCount:()=>localOrders,getPath:()=>path};
 }
@@ -275,4 +283,72 @@ test('search routes decode exactly once and malformed routes show a recovery pag
   ui.location.hash='#/search/%invalid';ui.windowEvents.hashchange({});
   assert.match(ui.getElement().innerHTML,/页面暂未找到/);
   assert.ok(!ui.getElement().innerHTML.includes('journey-hero'));
+});
+
+test('buyer confirmation uses the opened order version, then shows completed status with after-sale access',async()=>{
+  const shipped={...model.shipOrder(makeOrder(),'模拟物流','DEMO-RECEIVE'),version:2};
+  const received={...model.receiveOrder(shipped),version:3};
+  const ui=await harness({orders:[shipped],mutate:()=>received});
+  const button={dataset:{action:'receive-order',id:shipped.id},disabled:false};
+  const click=()=>ui.events.click({target:{classList:{contains:()=>false},closest:()=>button}});
+  await click();assert.match(ui.elements.get('#modal-root').innerHTML,/data-version="2"/);
+  button.dataset={action:'confirm-receive',id:shipped.id,version:'2'};await click();
+  assert.equal(ui.requests[0][1],'receive');assert.deepEqual(ui.requests[0][2],{expectedVersion:2});
+  assert.equal(ui.getOrders()[0].version,3);assert.equal(ui.canReceive(ui.getOrders()[0]),false);
+  assert.equal(ui.matchesFilter(received,'received'),true);assert.equal(ui.matchesFilter(received,'shipped'),false);
+  const html=ui.orderDetail(received.id);assert.match(html,/已完成（模拟）/);assert.match(html,/买家已确认模拟收货/);
+  assert.match(html,/申请售后/);assert.doesNotMatch(html,/data-action="receive-order"/);
+});
+
+test('receipt conflicts reload cloud truth and do not locally mark an order received',async()=>{
+  const shipped={...model.shipOrder(makeOrder(),'模拟物流','DEMO-CONFLICT'),version:2};
+  const newer={...shipped,version:3,afterSale:{id:'AFTER-ONE',status:'submitted',type:'refund',reason:'damaged',description:'模拟问题',hasEvidence:false,createdAt:shipped.createdAt,updatedAt:shipped.createdAt}};
+  const ui=await harness({orders:[shipped],mutate:()=>{throw Object.assign(new Error('版本冲突'),{status:409});}});
+  ui.setServerOrders([newer]);
+  const button={dataset:{action:'confirm-receive',id:shipped.id,version:'2'},disabled:false};
+  await ui.events.click({target:{classList:{contains:()=>false},closest:()=>button}});
+  assert.equal(ui.getOrders()[0].version,3);assert.equal(ui.getOrders()[0].receipt,undefined);
+  assert.equal(ui.canReceive(ui.getOrders()[0]),false);assert.equal(ui.elements.get('#modal-root').innerHTML,'');
+});
+
+test('all-orders list renders persisted cards and help topics keep their replies after adding onboarding FAQs',async()=>{
+  const first=makeOrder(),second=makeOrder('DEMO-CLOUD-TWO');
+  const ui=await harness({orders:[first,second]});
+  assert.equal((ui.orderList().match(/class="order-card"/g)||[]).length,2);
+  assert.match(ui.orderList(),/DEMO-CLOUD-TWO/);
+  assert.match(ui.answerFor('运费多少'),/甘肃.*6 元/);
+  assert.match(ui.answerFor('我要申请售后'),/申请售后/);
+  assert.match(ui.answerFor('苹果有多大'),/75–85mm/);
+  assert.match(ui.answerFor('手机电脑同步吗'),/同一账号/);
+});
+
+test('account changes during post-checkout inventory refresh cannot expose the old order to the new account',async()=>{
+  const ui=await harness();let release;
+  ui.setInventoryReader(()=>new Promise(resolve=>{release=resolve;}));
+  const operation=ui.createBuyerCloudOrder([{productId:'jingtai-apple',variant:'small',quantity:1}],'gansu',5590);
+  for(let i=0;i<30&&!release;i++)await Promise.resolve();assert.ok(release);
+  ui.setUser({id:'buyer-two'});release();
+  await assert.rejects(operation,/登录账号已变化/);
+  assert.deepEqual(ui.getOrders(),[]);assert.equal(ui.requests.length,1);
+});
+
+test('shopping refresh deferred during input redraws once the page becomes idle even without another data change',async()=>{
+  const ui=await harness();const state={...ui.getBuyerState(),version:2,favorites:['jingtai-apple']};
+  ui.setBuyerReader(async()=>state);ui.getElement().innerHTML='editing content';ui.setBusy(true);
+  await ui.syncBuyerShopping();assert.equal(ui.getElement().innerHTML,'editing content');
+  ui.setBusy(false);await ui.syncBuyerShopping();assert.notEqual(ui.getElement().innerHTML,'editing content');
+});
+
+test('cart recovery is registered before inventory awaits and original pending survives if the marker cannot persist',async()=>{
+  for(const durable of [true,false]){
+    const ui=await harness({cleanupDurable:durable});ui.location.hash='#/cart-checkout';let release;
+    ui.setInventoryReader(()=>new Promise(resolve=>{release=resolve;}));
+    const operation=ui.createBuyerCloudOrder([{productId:'jingtai-apple',variant:'small',quantity:1}],'gansu',5590);
+    for(let i=0;i<30&&!release;i++)await Promise.resolve();assert.ok(release);
+    assert.deepEqual(ui.cleanupPrepared,[{id:'DEMO-CLOUD-ONE',account:'buyer-one'}]);
+    assert.equal(!!ui.getPendingCloudOrder(),!durable);
+    release();await operation;
+    ui.cartCleanupConfirmed('DEMO-CLOUD-ONE','buyer-two');assert.equal(!!ui.getPendingCloudOrder(),!durable);
+    ui.cartCleanupConfirmed('DEMO-CLOUD-ONE','buyer-one');assert.equal(ui.getPendingCloudOrder(),null);
+  }
 });

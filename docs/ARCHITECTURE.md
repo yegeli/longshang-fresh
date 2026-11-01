@@ -1,12 +1,13 @@
 # 架构说明
 
-## V0.9：买家浏览路径与现有云端履约
+## V1.0：完整模拟履约与买家云购物资料
 
 买家与后台继续使用 `public/` 中的原生 HTML、CSS 和 JavaScript ES Modules。`npm start` 运行独立静态演示；云部署使用 Vinext／Cloudflare Worker 处理业务 API，将商品、库存批次、库存记录、订单、售后及素材元数据保存到 D1，文件保存到 R2；`dist/` 是构建输出。服务端订单仍为无支付的模拟业务。
 
 | 文件或目录 | 职责 |
 | --- | --- |
 | `public/index.html`、`app.js`、`experience.js`、`styles.css` | 买家页面、购物车、收藏与模拟订单 |
+| `public/buyer-state-store.js`、`server/buyer-state-api.js` | 登录账号的购物资料读写、版本检查、购物车扣减与恢复 |
 | `public/journey.js`、`journey.css`、`buyer-mobile.css` | 首页、产区、采购者店铺、商品回链与移动端操作 |
 | `public/storefront-data.js`、`storefront-store.js` | 模拟产区说明与公开目录读适配；内存状态，失败清空关系 |
 | `server/storefront-api.js` | 公开产区／店铺目录，只投影可展示资料，按真实商品归属分组 |
@@ -42,8 +43,9 @@
 | 库存、当前采收批次与记录 | 只说明需要云端，不模拟云库存保存 | D1 `product_inventory` 与 `inventory_events`，默认未配置视为0 |
 | 上传文件与元数据 | IndexedDB | R2 文件、D1 `media` |
 | 订单、发货与售后 | localStorage | D1 `orders`，同一登录身份跨设备读取 |
-| 购物车、收藏、足迹 | localStorage | 仍为 localStorage，不跨设备共享 |
-| 当前规格、数量、示例地区 | sessionStorage | 仍为当前标签页记录 |
+| 购物车、收藏、足迹、示例地区偏好 | localStorage／sessionStorage | D1 `buyer_shopping`，按登录账号保存，冲突不覆盖 |
+| 订单购物车扣减 | 按成功订单数量移除 | D1 `buyer_order_consumptions` 幂等标记与购物资料更新同事务 |
+| 当前规格与数量 | sessionStorage | 仍为当前标签页选择；示例地区偏好云同步 |
 | 客服对话、编辑表单 | 页面内存 | 仍为本机演示 |
 
 沿用 `longshang-demo-*` 键兼容本机记录，不自动上传这些数据。不同来源各自保存本地数据，复制代码或登录其他设备不会迁移旧本机记录。云端订单在列表、详情和后台按账户读取，同步时间以成功完成读取为准。云端初始为空目录，由管理员显式加入模拟商品。
@@ -59,6 +61,9 @@
 | `GET /api/v1/session` | 当前身份与登录入口，匿名无管理权 |
 | `GET/POST /api/v1/admin/merchants` | 仅admin，读取全部至多200份或新建档案，不自动生成或发送邀请 |
 | `GET/PUT /api/v1/admin/merchants/:id`、`GET /api/v1/admin/merchants/:id/audit` | 仅admin，版本控制的档案修改及最新50条前后快照审计 |
+| `GET/PUT /api/v1/me/shopping` | 登录账号自己的购物车／收藏／足迹／示例地区，完整白名单与expectedVersion CAS，不接受客户端owner字段 |
+| `POST /api/v1/me/shopping/consume-order` | 仅本人真实云模拟订单，按快照数量扣所选行，重复消费不重复扣，失败事务回滚 |
+| `POST /api/v1/orders/:id/receive` | 订单买家本人确认模拟收货，expectedVersion、发货与售后状态校验，不触发支付或库存变化 |
 | `GET /api/v1/storefront` | 只读产区与店铺目录，已发布且卖家未停用商品；不返回邮箱、身份ID、权限或草稿 |
 | `GET /api/v1/products` | 只返回已发布且卖家未停用的商品 |
 | `GET /api/v1/admin/products` | merchant需products权限且仅自己的商品，admin全部 |
@@ -127,3 +132,13 @@ V0.7已实现商家档案权限与变更审计，V0.8追加库存／当前批次
 客户端把目录商品ID与当前已上架商品相交后展示。目录失败清空旧关系，明确重试，不改成本机模拟店；成功后可恢复。购物车按店铺分组，入口、结算页与提交前均校验同店；服务端继续独立执行真实归属检查。结算保留原报价与批次快照，只删除确认成功的所选数量。订单结果不确定时仍用原请求重试；可在“我的订单”确认上次下单结果，不产生新请求或重复扣减。
 
 店铺介绍当前是模拟结构，未提供采购者自定义店铺装修或独立发布审核；采收视频仍绑定具体商品，管理后台更换并保存上架后供买家读取。
+
+## 收货、云购物资料与异常恢复
+
+收货保留原 `status: created/cancelled` 和 `fulfillment.status: shipped`，新增可选 `receipt: {status: received, receivedAt}`。只有买家本人可确认已发货且没有待处理售后／完成退款的订单。重复、越权和旧版本被拒，不再次写时间或库存。买家与后台将该状态显示为已完成；确认后仍能申请模拟售后，不能再次发货或取消。
+
+新增 `0004_swift_mongoose.sql` 只创建 `buyer_shopping` 与 `buyer_order_consumptions`，不搬迁本地记录、不改历史商品或库存。购物资料GET缺行返回空状态version0且不写库，PUT完整校验四字段后按版本原子插入／更新。购物车最多12个规格、每规格1–10份；收藏与足迹各20项，偏好仅已有示例地区，不收真实地址。
+
+客户端串行写，成功应答前不显示保存成功；读取修订号防旧GET覆盖新写，切换账号使旧响应失效。版本冲突或结果不确定只重新GET一次，并提示核对，不自动重放写请求。云读取失败清空旧快照并显示重试，不改存localStorage。下架或已不可见商品在购物车保留占位，仍能取消勾选或移除，不在保存其他商品时悄悄丢弃。
+
+`consume-order` 校验订单归属并按订单快照扣当前仍选中行的数量，未选行和超出已购数量的余量保留。持久幂等标记与版本更新同一事务；重复调用返回当前资料，不再次扣。清车失败仍展示已经成功的订单，当前账号的sessionStorage仅保存至多50个待确认订单ID，订单详情可重试。该标记不包含购物资料，也不会让直接购买订单自动清理购物车。

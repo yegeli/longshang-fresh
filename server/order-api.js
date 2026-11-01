@@ -1,4 +1,4 @@
-import { ADDRESSES, createAfterSale, updateAfterSale, shipOrder, saveOrderNote, resolveAfterSale } from '../public/model.js';
+import { ADDRESSES, createAfterSale, updateAfterSale, shipOrder, receiveOrder, saveOrderNote, resolveAfterSale } from '../public/model.js';
 import { hasPermission, managementGuard, visibleSellerSQL } from './merchant-access.js';
 import { inventoryDTO, inventoryJSON, MAX_STOCK } from './inventory-api.js';
 
@@ -161,17 +161,17 @@ export async function handleOrderApi(request, env, helpers) {
   }
 
   if (path === base) { method(request, isAdminPath ? ['GET'] : ['GET', 'POST']); }
-  const match = new RegExp(`^${base}/([^/]+)(?:/(cancel|aftersale(?:/withdraw|/resolve)?|ship|note))?$`).exec(path);
+  const match = new RegExp(`^${base}/([^/]+)(?:/(cancel|receive|aftersale(?:/withdraw|/resolve)?|ship|note))?$`).exec(path);
   if (!match) fail(404, 'not_found', '接口不存在。');
   const [, id, action] = match;
   if (!action) { method(request, ['GET']); return json({ order: dto(await lookup(id)) }); }
-  const actions = isAdminPath ? ['ship', 'note', 'aftersale/resolve'] : ['cancel', 'aftersale', 'aftersale/withdraw'];
+  const actions = isAdminPath ? ['ship', 'note', 'aftersale/resolve'] : ['cancel', 'receive', 'aftersale', 'aftersale/withdraw'];
   if (!actions.includes(action)) fail(404, 'not_found', '接口不存在。');
   const permission = action === 'aftersale/resolve' ? 'aftersales' : 'orders';
   if (isAdminPath && !hasPermission(user, permission)) fail(403, 'forbidden', '此账户没有所需订单或售后权限。');
   method(request, ['POST']);
   const body = await readBody();
-  allowed(body, { cancel: ['expectedVersion'], aftersale: ['expectedVersion', 'type', 'reason', 'description', 'hasEvidence'],
+  allowed(body, { cancel: ['expectedVersion'], receive: ['expectedVersion'], aftersale: ['expectedVersion', 'type', 'reason', 'description', 'hasEvidence'],
     'aftersale/withdraw': ['expectedVersion'], ship: ['expectedVersion', 'carrier', 'tracking'], note: ['expectedVersion', 'note'], 'aftersale/resolve': ['expectedVersion', 'reply'] }[action]);
   const expected = version(body.expectedVersion), row = await lookup(id);
   if (row.version !== expected) fail(409, 'version_conflict', '订单已在其他设备更新，请刷新后重新操作；本次未覆盖。');
@@ -179,9 +179,10 @@ export async function handleOrderApi(request, env, helpers) {
   let next;
   try {
     if (action === 'cancel') {
-      if (order.status !== 'created' || order.fulfillment?.status === 'shipped' || order.afterSale?.status === 'submitted' || refunded) throw new Error('订单已取消、已发货、正在售后或已模拟退款，不能取消。');
+      if (order.status !== 'created' || order.fulfillment?.status === 'shipped' || order.receipt?.status === 'received' || order.afterSale?.status === 'submitted' || refunded) throw new Error('订单已取消、已发货、已收货、正在售后或已模拟退款，不能取消。');
       next = { ...order, status: 'cancelled' };
-    } else if (action === 'aftersale') {
+    } else if (action === 'receive') next = receiveOrder(order);
+    else if (action === 'aftersale') {
       if (refunded) throw new Error('整单模拟退款已完成，不能再次申请售后。');
       if ((order.afterSaleHistory?.length || 0) >= 100) throw new Error('此订单已达到模拟售后申请次数上限。');
       next = createAfterSale(order, body, uuid('AFTER'));

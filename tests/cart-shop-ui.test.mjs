@@ -22,6 +22,10 @@ function harness({cloud=true,rows=[APPLE,GOJI],sameShop=false}={}){
     toast:value=>notices.push(value),render(){},updateTabs(){},title:()=>'',miniProduct:()=>'',productCard:()=>'',newId:()=> 'DEMO-LOCAL-SHOP',
     addOrder:order=>localOrders.push(order),createCloudOrder:async(...args)=>{calls.push(copy(args));if(failure)throw new Error(failure);return {id:'DEMO-CLOUD-SHOP'};}};
   const factory=load({...model,esc,icon,localStorage:storage,isCloudMode:()=>cloud,getCloudState:()=>({session:{user:{id:'buyer-test'}}}),imageFor:product=>product?.image,SPECIALTY_GUIDES:[],COLLECTIONS:[]});
+  const state=()=>({cart:JSON.parse(values.get(model.CART_KEY)),favorites:[],recent:[],preferredAddress:'gansu',ready:true,error:'',accountId:'buyer-test',version:1});
+  api.getBuyerState=state;api.refreshBuyerState=async()=>state();
+  api.mutateBuyerState=async transform=>{const draft=state();const next=transform(draft)||draft;values.set(model.CART_KEY,JSON.stringify(next.cart));return state();};
+  api.consumeBuyerOrder=async()=>{const items=calls.at(-1)[0];const next=state().cart.flatMap(row=>{const ordered=items.find(item=>item.productId===row.productId&&item.variant===row.variant);return !ordered||!row.selected?[row]:row.quantity>ordered.quantity?[{...row,quantity:row.quantity-ordered.quantity}]:[];});values.set(model.CART_KEY,JSON.stringify(next));return state();};
   const experience=factory(api);
   return {experience,values,calls,notices,localOrders,ownership,directory,inventory,api,
     rows:()=>JSON.parse(values.get(model.CART_KEY)),setRows:next=>values.set(model.CART_KEY,JSON.stringify(next)),setFailure:value=>{failure=value;},
@@ -60,7 +64,7 @@ test('checkout submits the frozen shown items, prices and batch rather than a la
   assert.equal(h.calls.length,1);
   assert.deepEqual(h.calls[0][0],[{productId:APPLE.productId,variant:'small',quantity:1}]);
   assert.equal(h.calls[0][2],5590);assert.equal(h.calls[0][3]['jingtai-apple::small'],4990);assert.equal(h.calls[0][4]['jingtai-apple'],'BATCH-SHOWN');
-  assert.deepEqual(h.rows(),[{...GOJI,selected:true}]);assert.equal(h.path(),'order/DEMO-CLOUD-SHOP');assert.equal(h.localOrders.length,0);
+  assert.deepEqual(h.rows(),[{...APPLE,selected:false},{...GOJI,selected:true}]);assert.equal(h.path(),'order/DEMO-CLOUD-SHOP');assert.equal(h.localOrders.length,0);
 });
 
 test('cloud directory loading, failure, missing and preview ownership all fail closed without a fake local shop',async()=>{

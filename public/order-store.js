@@ -1,5 +1,5 @@
 import { CloudError, apiRequest, getCloudState, requireManager, hasPermission, requirePermission, managementScopeKey, requireUnchangedScope } from './cloud-client.js';
-import { orderItems, ADDRESSES } from './model.js';
+import { orderItems, validOrderReceipt, ADDRESSES } from './model.js';
 
 // Cloud orders never use browser storage. The caller owns its display cache and
 // the pending checkout key; no failed request is converted into a local order.
@@ -26,7 +26,8 @@ const isDate = value => typeof value === 'string' && Number.isFinite(Date.parse(
 function checkedOrder(order) {
   if (!order || !/^DEMO-[A-Z0-9-]+$/.test(order.id || '') || !Number.isSafeInteger(order.version) || order.version < 1
     || !isDate(order.createdAt) || !isDate(order.updatedAt) || !['created', 'cancelled'].includes(order.status)
-    || !ADDRESSES.some(address => address.id === order.address && address.shipping !== null)) invalidResponse();
+    || !ADDRESSES.some(address => address.id === order.address && address.shipping !== null)
+    || order.receipt !== undefined && !validOrderReceipt(order)) invalidResponse();
   const items = orderItems(order);
   if (!items.length || !['quantity', 'subtotal', 'shipping', 'total'].every(key => Number.isSafeInteger(order[key]) && order[key] >= 0)
     || order.quantity !== items.reduce((sum, item) => sum + item.quantity, 0)
@@ -94,7 +95,7 @@ export async function submitCloudOrder(input) {
 }
 
 export async function mutateCloudOrder(id, action, payload, { manager = false } = {}) {
-  const actions = manager ? ['ship', 'note', 'aftersale/resolve'] : ['cancel', 'aftersale', 'aftersale/withdraw'];
+  const actions = manager ? ['ship', 'note', 'aftersale/resolve'] : ['cancel', 'receive', 'aftersale', 'aftersale/withdraw'];
   if (!actions.includes(action)) throw new CloudError('此身份不能执行该订单操作。', 403, 'forbidden');
   if (manager) requirePermission(action === 'aftersale/resolve' ? 'aftersales' : 'orders');
   if (!Number.isSafeInteger(payload?.expectedVersion) || payload.expectedVersion < 1) throw new CloudError('请先读取最新订单版本。', 409, 'version_conflict');

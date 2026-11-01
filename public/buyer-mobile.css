@@ -100,3 +100,31 @@
   .detail-facts{padding-left:12px;padding-right:12px}.mini-header{padding-left:12px;padding-right:12px}
 }
 @media(prefers-reduced-motion:reduce){#app{scroll-behavior:auto}.purchase-bar button{transition:none}}
+
+/* Account shopping state and preferences use the same calm buyer surfaces. */
+.buyer-state-gate{display:flex;flex-direction:column;align-items:center;gap:13px;padding:32px 22px;text-align:center;background:#eef2e6;border:1px solid #dce5d0;border-radius:12px;margin:18px 14px;min-width:0;overflow-wrap:anywhere}
+.buyer-state-gate>span{display:grid;place-items:center;width:65px;height:65px;background:#e1e9d7;border-radius:50%;color:#718a59}
+.buyer-state-gate h2{font-size:20px;line-height:1.65;font-weight:550}.buyer-state-gate p{font-size:14px;line-height:1.9;color:#6f805f}
+.buyer-state-gate>.primary,.buyer-state-gate>.text-link{min-height:44px;font-size:14px;max-width:100%}
+.buyer-state-gate>.primary{min-width:120px;margin-top:5px}
+.buyer-state-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 14px;margin:14px 0;background:#edf3e7;border:1px solid #dae5cf;border-radius:9px;min-width:0}
+.buyer-state-notice>p{min-width:0;flex:1;font-size:14px;line-height:1.85;color:#667e54;overflow-wrap:anywhere}
+.buyer-state-notice>.text-link{flex-shrink:0;max-width:103px;min-height:44px;font-size:14px;line-height:1.7;text-align:center;padding:7px 0}
+.buyer-state-notice.has-error{background:#f6eddf;border-color:#e8d8be}.buyer-state-notice.has-error>p{color:#80613c}
+.order-detail-page>.buyer-state-notice{margin-left:14px;margin-right:14px}
+.saved-unavailable{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:16px 12px;background:var(--paper);border:1px solid var(--line);border-radius:9px;min-width:0}
+.saved-unavailable>span{color:#8b9779;flex-shrink:0}.saved-unavailable>p{flex:1;min-width:0;font-size:14px;line-height:1.8;color:#6e7f5f;overflow-wrap:anywhere}
+.saved-unavailable small{display:block;font-size:12px;line-height:1.8;margin-top:5px;color:#839074}.saved-unavailable>.text-link{flex-shrink:0;font-size:14px}
+.cart-item-placeholder{display:grid;place-items:center;width:100%;height:99px;background:#e9eedf;color:#8b9b76;border-radius:6px}
+.cart-item-unavailable .cart-item-copy>.cart-remove{display:block;margin-top:7px;font-size:14px}.cart-item-unavailable .cart-item-copy>span{font-size:14px;color:#778767}
+.buyer-preferences{padding:0 17px calc(24px + env(safe-area-inset-bottom,0px));min-width:0;overflow-wrap:anywhere}
+.buyer-preferences>header{padding:27px 0 20px}.buyer-preferences h1{font-size:26px;line-height:1.65;margin:11px 0;font-weight:550}
+.buyer-preferences>header p{font-size:14px;line-height:1.9;color:#728363}.buyer-preferences .eyebrow{font-size:12px;line-height:1.8}
+.buyer-preference-row{display:flex;align-items:center;gap:12px;width:100%;padding:18px 14px;text-align:left;background:var(--paper);border:1px solid var(--line);border-radius:9px}
+.buyer-preference-row>span{display:grid;place-items:center;width:45px;height:45px;flex-shrink:0;border-radius:12px;background:#eaf0e0;color:#71895a}
+.buyer-preference-row>div{flex:1;min-width:0}.buyer-preference-row strong{font-size:17px;line-height:1.7}.buyer-preference-row p{font-size:14px;line-height:1.8;color:#7e8c70;margin-top:5px}
+.buyer-preference-help{margin-top:24px;padding:21px 17px;background:#eaf0e0;border-radius:10px}.buyer-preference-help h2{font-size:18px;line-height:1.65}
+.buyer-preference-help ol{font-size:14px;line-height:1.95;padding-left:21px;color:#6e815a;margin:15px 0}.buyer-preference-help li+li{margin-top:8px}.buyer-preference-help .text-link{font-size:14px}
+#app .mine-menu>button>span{font-size:16px;line-height:1.8}#app .mine-menu small{font-size:14px;line-height:1.75}
+#app .mine-profile p{font-size:14px;line-height:1.85}.mine-stats span,.order-shortcuts span{font-size:14px;line-height:1.6}.order-shortcuts small{font-size:12px;line-height:1.7}
+@media(max-width:360px){.buyer-state-notice{gap:8px;padding:12px}.buyer-state-gate{padding-left:17px;padding-right:17px}.buyer-preferences{padding-left:13px;padding-right:13px}.buyer-state-notice>.text-link{max-width:84px}.saved-unavailable{flex-wrap:wrap}.saved-unavailable>p{flex-basis:180px}.saved-unavailable>.text-link{margin-left:auto}}

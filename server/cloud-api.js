@@ -1,5 +1,6 @@
 import { BASE_CATALOG, normalizeCatalogProduct } from '../public/model.js';
 import { handleOrderApi } from './order-api.js';
+import { handleBuyerStateApi } from './buyer-state-api.js';
 import { handleMerchantApi } from './merchant-api.js';
 import { handleInventoryApi } from './inventory-api.js';
 import { handleStorefrontApi } from './storefront-api.js';
@@ -337,6 +338,8 @@ export async function handleApi(request, env) {
     if (merchantResponse) return merchantResponse;
     const inventoryResponse = await handleInventoryApi(request, env, { manager, requireDB, sameOrigin, jsonBody, fail, json, method });
     if (inventoryResponse) return inventoryResponse;
+    const buyerStateResponse = await handleBuyerStateApi(request, env, { identity, requireDB, sameOrigin, jsonBody, fail, json, method });
+    if (buyerStateResponse) return buyerStateResponse;
     const orderResponse = await handleOrderApi(request, env, { identity, manager, requireDB, sameOrigin, jsonBody, fail, json, method });
     if (orderResponse) return orderResponse;
     const storefrontResponse = await handleStorefrontApi(request, env, { requireDB, json, method });

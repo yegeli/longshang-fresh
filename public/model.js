@@ -334,12 +334,36 @@ export function updateAfterSale(order, status, now = new Date().toISOString()) {
 export function shipOrder(order, carrier, tracking, now = new Date().toISOString()) {
   if (!order || order.status !== 'created') throw new Error('已取消的订单不能发货');
   if (order.afterSale?.status === 'resolved' && order.afterSale.type === 'refund') throw new Error('已完成整单模拟退款的订单不能发货');
+  if (order.receipt?.status === 'received') throw new Error('这笔演示订单已确认收货，不能再次发货');
   if (order.fulfillment?.status === 'shipped') throw new Error('这笔演示订单已发货，请勿重复操作');
   if (order.afterSale?.status === 'submitted') throw new Error('请先处理或撤回待处理的售后申请');
   if (typeof carrier !== 'string' || !carrier.trim() || carrier.length > 40) throw new Error('快递名称必填且最多40字');
   if (typeof tracking !== 'string' || !/^DEMO-[A-Z0-9-]{1,75}$/i.test(tracking.trim())) throw new Error('请填写以DEMO-开头的演示单号');
   if (!isDate(now)) throw new Error('演示发货时间无效');
   return { ...order, fulfillment: { status: 'shipped', carrier: carrier.trim(), tracking: tracking.trim(), shippedAt: now } };
+}
+
+// Receipt is optional for older orders. Keep fulfillment and the existing main
+// status unchanged, so historical snapshots and after-sale flows stay compatible.
+export function validOrderReceipt(order) {
+  const receipt = order?.receipt;
+  return !!receipt && typeof receipt === 'object' && !Array.isArray(receipt)
+    && Object.keys(receipt).length === 2 && Object.hasOwn(receipt, 'status') && Object.hasOwn(receipt, 'receivedAt')
+    && receipt.status === 'received' && order.status === 'created' && order.fulfillment?.status === 'shipped'
+    && isDate(order.createdAt) && isDate(order.fulfillment.shippedAt) && isDate(receipt.receivedAt)
+    && Date.parse(order.createdAt) <= Date.parse(order.fulfillment.shippedAt)
+    && Date.parse(order.fulfillment.shippedAt) <= Date.parse(receipt.receivedAt);
+}
+
+export function receiveOrder(order, now = new Date().toISOString()) {
+  if (!order || order.status !== 'created') throw new Error('已取消的演示订单不能确认收货');
+  if (order.receipt !== undefined) throw new Error('这笔演示订单已确认收货或收货资料异常，请勿重复操作');
+  if (order.fulfillment?.status !== 'shipped') throw new Error('仅已模拟发货的订单可确认收货');
+  if (order.afterSale?.status === 'submitted') throw new Error('请先处理或撤回待处理的售后申请，再确认收货');
+  if (order.afterSale?.status === 'resolved' && order.afterSale.type === 'refund') throw new Error('已完成整单模拟退款的订单不能确认收货');
+  const result = { ...order, receipt: { status: 'received', receivedAt: now } };
+  if (!validOrderReceipt(result)) throw new Error('模拟收货时间无效，不能早于下单或发货时间');
+  return result;
 }
 
 export function saveOrderNote(order, note) {
@@ -446,6 +470,10 @@ export function validOrders(value) {
       && fulfillment.carrier.length <= 40 && typeof fulfillment.tracking === 'string'
       && /^DEMO-[A-Z0-9-]{1,75}$/i.test(fulfillment.tracking) && isDate(fulfillment.shippedAt)) {
       cleaned.fulfillment = { status: 'shipped', carrier: fulfillment.carrier.trim(), tracking: fulfillment.tracking, shippedAt: fulfillment.shippedAt };
+    }
+    if (order.receipt !== undefined) {
+      if (!cleaned.fulfillment || !validOrderReceipt(order)) continue;
+      cleaned.receipt = { status: 'received', receivedAt: order.receipt.receivedAt };
     }
     const afterSale = cleanAfterSale(order.afterSale);
     if (afterSale) cleaned.afterSale = afterSale;
