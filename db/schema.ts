@@ -167,3 +167,12 @@ export const buyerOrderConsumptions = sqliteTable('buyer_order_consumptions', {
   buyerId: text('buyer_id').notNull().references(() => users.id),
   createdAt: text('created_at').notNull()
 }, table => [index('buyer_order_consumptions_buyer').on(table.buyerId)]);
+
+// An explicitly authorized maintenance request claims its operation once. This
+// schema creates no stock; the disabled-by-default endpoint owns the transaction.
+export const setupOperations = sqliteTable('setup_operations', {
+  key: text('operation_key').primaryKey(),
+  requestNonce: text('request_nonce').notNull(),
+  summaryJson: text('summary_json').notNull(),
+  createdAt: text('created_at').notNull()
+}, table => [check('setup_summary_json', sql`json_valid(${table.summaryJson}) and json_type(${table.summaryJson}) = 'object'`)]);

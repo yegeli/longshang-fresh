@@ -4,6 +4,7 @@ import { handleBuyerStateApi } from './buyer-state-api.js';
 import { handleMerchantApi } from './merchant-api.js';
 import { handleInventoryApi } from './inventory-api.js';
 import { handleStorefrontApi } from './storefront-api.js';
+import { handleDemoInventorySetup } from './demo-inventory-setup.js';
 import { MERCHANT_PERMISSIONS, merchantDTO, hasPermission, managementGuard, visibleSellerSQL } from './merchant-access.js';
 
 const PREFIX = '/api/v1';
@@ -39,7 +40,7 @@ async function identity(request, env) {
   const id = request.headers.get('oai-authenticated-user-id');
   const rawEmail = request.headers.get('oai-authenticated-user-email');
   if (!id || !rawEmail) return null;
-  if (id.length > 255 || id !== id.trim() || /[\u0000-\u001f\u007f]/u.test(id)) fail(401, 'identity_invalid', '登录身份无效，请重新登录。');
+  if (id.startsWith('system:') || id.length > 255 || id !== id.trim() || /[\u0000-\u001f\u007f]/u.test(id)) fail(401, 'identity_invalid', '登录身份无效，请重新登录。');
   const email = rawEmail.trim().toLowerCase();
   if (email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(401, 'identity_invalid', '登录身份无效，请重新登录。');
   const db = requireDB(env), now = isoNow(), name = email.split('@')[0].slice(0, 120);
@@ -329,6 +330,8 @@ function method(request, methods) {
 export async function handleApi(request, env) {
   try {
     const url = new URL(request.url), path = url.pathname;
+    const setupResponse = await handleDemoInventorySetup(request, env, { requireDB, sameOrigin, jsonBody, fail, json });
+    if (setupResponse) return setupResponse;
     if (path === `${PREFIX}/session`) {
       method(request, ['GET']);
       const user = await identity(request, env);
