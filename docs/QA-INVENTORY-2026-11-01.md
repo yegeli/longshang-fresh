@@ -32,7 +32,15 @@
 
 ## 发布记录
 
-本轮功能已通过上述检查，GitHub和托管发布结果完成后补记。
+2026-11-01 12:53（Asia/Shanghai）成功发布托管版本 **9**：[管理后台](https://jingtai-fresh-demo-1031.merry-brush-7565.chatgpt.site/admin?v=9)、[买家页面](https://jingtai-fresh-demo-1031.merry-brush-7565.chatgpt.site/?v=9#/home)。仍仅原所有者可访问，未增加外部访问者。
+
+- 功能源码通过命令行推送至 GitHub [`76b25d4`](https://github.com/yegeli/longshang-fresh/commit/76b25d470813d0d83c0f151d625cd8a4a51669c7)，远端main完整SHA已核对一致。[该提交CI](https://github.com/yegeli/longshang-fresh/actions/runs/41274503449)的Node22、Node24及云构建／迁移三项任务全部成功。
+- 托管源码提交 `1b41d4c9052f97c8547f74656b6db211e9b0bb36`，部署包由同一实现重新构建，保留原私有托管清单。首次上传遇到临时401授权失效；授权恢复后用原部署包成功发布，没有绕过鉴权或扩大受众。
+- 线上D1概览确认 `product_inventory`、`inventory_events` 已建立，原有用户、商家、商品、素材和订单表保留。
+- 线上独立HTTP确认六款商品继续可读，六款库存均为未配置的0余量；无访客身份的商家、商品、订单与库存管理接口均返回401。
+- 九份线上文件（`admin.js`、`admin.css`、`app.js`、`experience.js`、`model.js`、`styles.css`、`inventory-store.js`、`buyer-inventory.js`、`order-store.js`）与已提交源码逐字节一致。
+
+线上核对只使用平台服务访问凭据通过私有站点边界，没有伪造访客身份，也没有向生产业务表灌入测试库存或订单。无访客身份访问管理入口返回307，本轮未跟随登录跳转。完整库存设置、下单和取消流程在上述本机Worker中验证；生产登录后的人工交互仍待单独验收。发布后只补充本文档与README，不重复部署。
 
 ## 边界与使用方法
 
