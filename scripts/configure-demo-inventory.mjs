@@ -31,7 +31,12 @@ export async function configureDemoInventory(config, fetcher = fetch) {
     if (setup) headers['X-Demo-Setup-Token'] = config.setupToken;
     const response = await fetcher(origin + path, { method, headers, redirect: 'error', signal: AbortSignal.timeout(30000), ...(method === 'POST' ? { body: '{}' } : {}) });
     // Do not echo remote bodies or credentials on failure.
-    assert.equal(response.status, expected, `${method} ${path}: unexpected HTTP status.`);
+    if (response.status !== expected) {
+      const error = new Error('Unexpected HTTP status.');
+      error.code = `HTTP_${response.status}`;
+      error.phase = path;
+      throw error;
+    }
     const data = await response.json();
     assert.ok(data && typeof data === 'object', 'Expected JSON response.');
     return data;
@@ -89,8 +94,14 @@ async function main() {
     const config = JSON.parse(line || '{}');
     if (hidden) { spawnSync('stty', ['echo'], { stdio: ['inherit', 'ignore', 'ignore'] }); hidden = false; }
     console.log(JSON.stringify(await configureDemoInventory(config)));
-  } catch {
+  } catch (error) {
     console.error('Inventory configuration or verification failed. No credentials were logged. Inspect the service state before retrying.');
+    // Only allow diagnostic codes and a source line; error messages, response
+    // bodies and assertion values may contain secrets and must stay private.
+    const code = error?.cause?.code || error?.code;
+    const line = String(error?.stack || '').match(/configure-demo-inventory\.mjs:(\d+):\d+/)?.[1];
+    console.error(JSON.stringify({ code: typeof code === 'string' && /^[A-Z_0-9]+$/.test(code) ? code : 'UNKNOWN', line: line || null,
+      phase: typeof error?.phase === 'string' && /^\/api\/v1\/[a-z/-]+$/.test(error.phase) ? error.phase : null }));
     process.exitCode = 1;
   } finally {
     if (hidden) spawnSync('stty', ['echo'], { stdio: ['inherit', 'ignore', 'ignore'] });

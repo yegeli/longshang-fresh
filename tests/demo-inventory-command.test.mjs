@@ -65,6 +65,6 @@ test('CLI never silently follows redirects or ignores product changes', async ()
   await assert.rejects(configureDemoInventory(config, async (_url, options) => {
     calls++; assert.equal(options.redirect, 'error');
     return new Response('', { status: 307, headers: { Location: 'https://untrusted.example' } });
-  }), /unexpected HTTP status/);
+  }), /Unexpected HTTP status/);
   assert.equal(calls, 1);
 });
