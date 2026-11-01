@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BASE_CATALOG, CATALOG, PRODUCT, setCatalog, getProduct, quote, createOrder, validOrders } from '../dist/model.js';
-import { CATALOG_KEY, readCatalog, saveProduct, setProductStatus, newProductTemplate, parsePrice } from '../dist/catalog-store.js';
+import { BASE_CATALOG, CATALOG, PRODUCT, setCatalog, getProduct, quote, createOrder, validOrders } from '../public/model.js';
+import { CATALOG_KEY, readCatalog, saveProduct, setProductStatus, newProductTemplate, parsePrice } from '../public/catalog-store.js';
 
 const values = new Map();
 let failReads = false, failWrites = false;

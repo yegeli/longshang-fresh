@@ -55,8 +55,8 @@ test('the real application serves buyer/admin entry points and static assets', a
   const server = await createStaticServer();
   t.after(() => close(server));
   const port = await listen(server);
-  const index = await readFile(new URL('../dist/index.html', import.meta.url));
-  const admin = await readFile(new URL('../dist/admin.html', import.meta.url));
+  const index = await readFile(new URL('../public/index.html', import.meta.url));
+  const admin = await readFile(new URL('../public/admin.html', import.meta.url));
 
   await t.test('entry aliases and query strings return the actual HTML, with safe MIME headers', async () => {
     for (const [path, expected] of [['/', index], ['/?v=4', index], ['/index.html', index], ['/admin', admin], ['/admin.html?v=4', admin]]) {
@@ -70,7 +70,7 @@ test('the real application serves buyer/admin entry points and static assets', a
     const js = await request(port, '/app.js');
     assert.equal(js.status, 200);
     assert.equal(js.headers['content-type'], 'text/javascript; charset=utf-8');
-    assert.deepEqual(js.body, await readFile(new URL('../dist/app.js', import.meta.url)));
+    assert.deepEqual(js.body, await readFile(new URL('../public/app.js', import.meta.url)));
     const css = await request(port, '/admin.css?v=4');
     assert.equal(css.status, 200);
     assert.equal(css.headers['content-type'], 'text/css; charset=utf-8');
@@ -257,7 +257,7 @@ test('the CLI honors HOST/PORT from another working directory and SIGTERM releas
     assert.match(output, /PORT: 1–65535/);
     const response = await request(port, '/admin');
     assert.equal(response.status, 200);
-    assert.deepEqual(response.body, await readFile(new URL('../dist/admin.html', import.meta.url)));
+    assert.deepEqual(response.body, await readFile(new URL('../public/admin.html', import.meta.url)));
     child.kill('SIGTERM');
     const shutdownTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
     try {
@@ -272,4 +272,14 @@ test('the CLI honors HOST/PORT from another working directory and SIGTERM releas
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await exited.catch(() => {});
   }
+});
+
+test('static demo advertises an explicit local-only session marker without a success response', async t => {
+  const server = await createStaticServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await request(server.address().port, '/api/v1/session');
+  assert.equal(response.status, 404);
+  assert.match(response.headers['content-type'], /^application\/json/);
+  assert.deepEqual(JSON.parse(response.body.toString()), { mode: 'local-demo' });
 });

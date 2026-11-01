@@ -13,3 +13,15 @@ preview-*.jpg
 # Historical third-party demo video is not redistributed.
 dist/assets/apple-harvest.mp4
 dist/assets/apple-harvest-poster.jpg
+
+# Generated cloud output and private local state.
+dist/
+.dev.vars*
+.sites-runtime/
+.wrangler/
+.vinext/
+.next/
+*.tsbuildinfo
+outputs/
+public/assets/apple-harvest.mp4
+public/assets/apple-harvest-poster.jpg

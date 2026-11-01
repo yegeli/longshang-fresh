@@ -1,4 +1,5 @@
-// Demo media stays on this device. No file is sent to a server.
+import { isCloudMode, apiRequest, requireManager, cloudMediaUrl } from './cloud-client.js';
+// Local demo uses IndexedDB; cloud mode uses the authenticated media API.
 const DB_NAME = 'longshang-demo-media-v1';
 const STORE = 'files';
 const cache = new Map();
@@ -23,6 +24,7 @@ function openDatabase() {
 }
 
 async function readMedia(id, kind) {
+  if (isCloudMode()) return cloudMediaUrl(id);
   if (cache.has(id)) return cache.get(id).kind === kind ? cache.get(id).url : '';
   const db = await openDatabase();
   const item = await new Promise((resolve, reject) => {
@@ -33,7 +35,7 @@ async function readMedia(id, kind) {
   });
   if (!item || item.kind !== kind || !(item.blob instanceof Blob)) throw new Error('本机素材已丢失，请在后台重新选择；暂用预设图片或隐藏视频');
   const url = URL.createObjectURL(item.blob);
-  cache.set(id, { url, kind });
+  cache.set(id, { url, kind, source: item.source || '' });
   return url;
 }
 
@@ -51,11 +53,11 @@ export async function hydrateMedia(products) {
 }
 
 export function imageFor(product) {
-  return cache.get(product?.imageMediaId)?.url || product?.image || 'assets/apples.jpg';
+  return (isCloudMode() && product?.imageMediaId ? cloudMediaUrl(product.imageMediaId) : cache.get(product?.imageMediaId)?.url) || product?.image || 'assets/apples.jpg';
 }
 export function videoFor(product) {
   // A missing replacement must never silently play the old footage.
-  return product?.videoMediaId ? cache.get(product.videoMediaId)?.url || '' : product?.video || '';
+  return product?.videoMediaId ? (isCloudMode() ? cloudMediaUrl(product.videoMediaId) : cache.get(product.videoMediaId)?.url || '') : product?.video || '';
 }
 export function mediaErrorFor(product) {
   return [...new Set([errors.get(product?.imageMediaId), errors.get(product?.videoMediaId)].filter(Boolean))].join('；');
@@ -89,15 +91,28 @@ function validatePlayable(file, kind) {
   });
 }
 
-export async function saveMedia(file, kind) {
+export async function saveMedia(file, kind, { source = '' } = {}) {
   const types = kind === 'image' ? ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] : kind === 'video' ? ['video/mp4', 'video/webm'] : [];
   const limit = kind === 'image' ? 5 : 30;
   if (!(file instanceof Blob) || !types.includes(file.type)) throw new Error(kind === 'image' ? '请选择 JPG、PNG、WebP 或 GIF 图片' : '请选择 MP4 或 WebM 视频');
   if (!file.size || file.size > limit * 1024 * 1024) throw new Error(`文件大小需大于 0 且不超过 ${limit}MB`);
+  if (isCloudMode()) {
+    requireManager();
+    if (typeof source !== 'string' || !source.trim() || source.length > 500) throw new Error('请填写素材来源及授权说明，最多500字');
+  }
   await validatePlayable(file, kind);
+  if (isCloudMode()) {
+    const saved = await apiRequest(`/api/v1/media?kind=${kind}`, { method: 'POST', headers: {
+      'Content-Type': file.type, 'X-File-Name': encodeURIComponent(String(file.name || '素材').slice(0,200)),
+      'X-Media-Source': encodeURIComponent(source.trim())
+    }, body: file });
+    if (!saved?.id || !saved?.url) throw new Error('云端素材响应异常，未替换原素材');
+    cache.set(saved.id, { url: saved.url, kind, source: saved.source || source.trim() });
+    errors.delete(saved.id); return saved;
+  }
   const db = await openDatabase();
   const id = `media-${crypto.randomUUID()}`;
-  const item = { id, kind, blob: file, name: String(file.name || '本机素材').slice(0,200), type: file.type, size: file.size, createdAt: new Date().toISOString() };
+  const item = { id, kind, source: String(source).trim().slice(0,500), blob: file, name: String(file.name || '本机素材').slice(0,200), type: file.type, size: file.size, createdAt: new Date().toISOString() };
   await new Promise((resolve, reject) => {
     const transaction = db.transaction(STORE, 'readwrite');
     transaction.objectStore(STORE).put(item);
@@ -105,7 +120,7 @@ export async function saveMedia(file, kind) {
     transaction.onerror = transaction.onabort = () => reject(new Error('素材未保存：浏览器空间不足或存储被禁用，请换一个较小文件'));
   });
   const url = URL.createObjectURL(file);
-  cache.set(id, { url, kind });
+  cache.set(id, { url, kind, source: item.source });
   errors.delete(id);
-  return { id, url, name: item.name, type: item.type, size: item.size };
+  return { id, url, name: item.name, type: item.type, size: item.size, source: item.source };
 }

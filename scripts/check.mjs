@@ -28,7 +28,7 @@ function run(args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-const groups = await Promise.all(['dist', 'scripts', 'tests'].map(directory => sourceFiles(resolve(root, directory))));
+const groups = await Promise.all(['public', 'scripts', 'tests', 'server'].map(directory => sourceFiles(resolve(root, directory))));
 const files = groups.flat();
 for (const file of files) run(['--check', file]);
 console.log(`Syntax checked ${files.length} source/test files.`);

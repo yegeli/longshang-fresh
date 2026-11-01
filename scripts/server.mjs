@@ -6,7 +6,7 @@ import { extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const DEFAULT_ROOT = fileURLToPath(new URL('../dist/', import.meta.url));
+const DEFAULT_ROOT = fileURLToPath(new URL('../public/', import.meta.url));
 const MIME = new Map([
   ['.html', 'text/html; charset=utf-8'], ['.css', 'text/css; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'], ['.mjs', 'text/javascript; charset=utf-8'],
@@ -91,6 +91,10 @@ async function serve(req, res, root) {
   const requested = requestPath(req.url);
   if (requested.status) {
     reply(req, res, requested.status, requested.status === 400 ? 'Bad request' : 'Not found');
+    return;
+  }
+  if (requested.path === '/api/v1/session') {
+    reply(req, res, 404, JSON.stringify({ mode: 'local-demo' }), { 'Content-Type': 'application/json; charset=utf-8' });
     return;
   }
   const candidate = resolve(root, `.${requested.path}`);

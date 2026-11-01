@@ -5,7 +5,7 @@ import {
   createAfterSale, updateAfterSale, CART_KEY, validCart, addToCart, quoteCart,
   createCartOrder, orderItems, BASE_CATALOG, setCatalog, isProductAvailable,
   shipOrder, saveOrderNote, resolveAfterSale
-} from '../dist/model.js';
+} from '../public/model.js';
 
 const createdAt = '2026-10-31T08:00:00.000Z';
 const submittedAt = '2026-10-31T08:05:00.000Z';

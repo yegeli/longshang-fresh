@@ -1,4 +1,11 @@
 import { BASE_CATALOG, setCatalog, normalizeCatalogProduct } from './model.js';
+import { initializeCloudMode, isCloudMode, apiRequest, requireManager, markCloudSynced } from './cloud-client.js';
+
+let cloudCatalog = [];
+// Only retain products this tab actually read from the public API, never admin-only data.
+let publicCatalog = [];
+const versions = new Map();
+export function getProductVersion(id) { return versions.get(id) ?? 0; }
 
 export const CATALOG_KEY = 'longshang-demo-catalog-v1';
 
@@ -32,10 +39,52 @@ function loadProducts() {
   return [...products.values()];
 }
 
-export function readCatalog() { return setCatalog(loadProducts()); }
+export function readCatalog() { return setCatalog(isCloudMode() ? cloudCatalog : loadProducts()); }
 
-export function saveProduct(input) {
+export async function initializeCatalog(options = {}) {
+  await initializeCloudMode();
+  return refreshCatalog(options);
+}
+export async function refreshCatalog({ admin = false } = {}) {
+  if (!isCloudMode()) return readCatalog();
+  if (admin) requireManager();
+  const data = await apiRequest(admin ? '/api/v1/admin/products' : '/api/v1/products');
+  if (!Array.isArray(data?.products) || data.products.some(product => !Number.isSafeInteger(product?.version) || product.version < 1)) throw new Error('云端商品目录或版本格式无效');
+  const next = data.products.map(product => normalizeCatalogProduct(product));
+  if (!admin && next.some(product => product.status !== 'published')) throw new Error('公开商品目录包含未发布记录');
+  // Missing public products stay removable in an existing cart, always unavailable.
+  // Respect the model's 200-product limit and never retain built-in or private admin entries.
+  const liveIds = new Set(next.map(product => product.id));
+  const unavailable = admin ? [] : publicCatalog.filter(product => !liveIds.has(product.id))
+    .slice(0, Math.max(0, 200 - next.length)).map(product => ({ ...product, status: 'offline' }));
+  const checked = setCatalog([...next, ...unavailable]);
+  if (!admin) publicCatalog = [...checked];
+  versions.clear();
+  data.products.forEach(product => versions.set(product.id, product.version));
+  cloudCatalog = [...checked]; markCloudSynced();
+  return checked;
+}
+async function saveCloudProduct(input, options) {
+  requireManager();
+  const previous = cloudCatalog.find(product => product.id === input.id);
+  const product = normalizeCatalogProduct(input, previous || {});
+  const expectedVersion = options.expectedVersion ?? getProductVersion(product.id);
+  const data = await apiRequest(`/api/v1/admin/products/${encodeURIComponent(product.id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ product, expectedVersion })
+  });
+  const version = data?.version ?? data?.product?.version;
+  if (!Number.isSafeInteger(version) || version < 1 || data?.product?.id !== product.id) throw new Error('云端保存响应或版本异常，请重新读取后核对');
+  const saved = normalizeCatalogProduct(data.product);
+  const index = cloudCatalog.findIndex(item => item.id === saved.id);
+  const next = [...cloudCatalog]; if (index < 0) next.push(saved); else next[index] = saved;
+  setCatalog(next); cloudCatalog = next;
+  versions.set(saved.id, version); markCloudSynced();
+  return saved;
+}
+
+export function saveProduct(input, options = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('商品资料格式无效');
+  if (isCloudMode()) return saveCloudProduct(input, options);
   const products = loadProducts();
   const index = products.findIndex(product => product.id === input.id);
   const product = normalizeCatalogProduct(input, index >= 0 ? products[index] : {});
@@ -49,11 +98,11 @@ export function saveProduct(input) {
   return product;
 }
 
-export function setProductStatus(id, status) {
+export function setProductStatus(id, status, options = {}) {
   if (!['published', 'draft', 'offline'].includes(status)) throw new Error('商品状态无效');
-  const product = loadProducts().find(item => item.id === id);
+  const product = (isCloudMode() ? cloudCatalog : loadProducts()).find(item => item.id === id);
   if (!product) throw new Error('商品不存在');
-  return saveProduct({ ...product, status });
+  return saveProduct({ ...product, status }, options);
 }
 
 export function newProductTemplate(id) {

@@ -302,3 +302,6 @@
 .unavailable-label{display:inline-block;background:#f3e6d7;color:#986447;font-size:9px;border-radius:3px;padding:3px 5px;margin:3px 0}
 .catalog-copy .overline{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .origin-film+.origin-film{padding-top:20px;border-top:1px solid var(--line);margin-top:22px}
+
+.catalog-sync{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 20px;background:#eff4ef;color:#49654d;font-size:11px;border-bottom:1px solid #dfe7df;flex-shrink:0}.catalog-sync button{background:transparent;color:inherit;border:0;text-decoration:underline;cursor:pointer;padding:2px 5px}.catalog-sync.sync-error{color:#9a4b26;background:#fff0dc}
+.media-load-error{display:block;position:relative;z-index:2;background:#fff0dc;color:#8b4725;padding:5px 8px;font-size:11px;line-height:1.5}
