@@ -1,4 +1,5 @@
 import { BASE_CATALOG, normalizeCatalogProduct } from '../public/model.js';
+import { handleOrderApi } from './order-api.js';
 
 const PREFIX = '/api/v1';
 const SIGN_IN = '/signin-with-chatgpt?return_to=%2Fadmin.html';
@@ -305,6 +306,8 @@ export async function handleApi(request, env) {
       const user = await identity(request, env);
       return json({ user: user ? { id: user.id, email: user.email, name: user.name } : null, role: user?.role || 'anonymous', canManage: ['admin', 'merchant'].includes(user?.role), signInUrl: SIGN_IN, signOutUrl: SIGN_OUT });
     }
+    const orderResponse = await handleOrderApi(request, env, { identity, manager, requireDB, sameOrigin, jsonBody, fail, json, method });
+    if (orderResponse) return orderResponse;
     if (path === `${PREFIX}/products`) { method(request, ['GET']); return json(await catalog(requireDB(env))); }
     if (path === `${PREFIX}/admin/products`) { method(request, ['GET']); return json(await catalog(requireDB(env), await manager(request, env))); }
     if (path === `${PREFIX}/admin/seed`) { method(request, ['POST']); return await seed(request, env); }
@@ -313,7 +316,7 @@ export async function handleApi(request, env) {
     if (path === `${PREFIX}/media`) { method(request, ['POST']); return await upload(request, env, url); }
     const mediaMatch = new RegExp(`^${PREFIX}/media/([^/]+)$`).exec(path);
     if (mediaMatch) { method(request, ['GET', 'HEAD']); return await readMedia(request, env, mediaMatch[1]); }
-    fail(404, 'not_found', '接口不存在。订单接口尚未接入云端。');
+    fail(404, 'not_found', '接口不存在。');
   } catch (error) {
     if (error instanceof ApiError) {
       const response = json({ error: { code: error.code, message: error.message } }, error.status, error.headers);

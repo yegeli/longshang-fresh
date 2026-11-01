@@ -1,6 +1,6 @@
-# 云端目录与素材 API
+# 云端商品、素材、订单与售后 API
 
-本阶段只实现托管身份、角色、商品目录和素材。订单、购物车、发货、售后仍是本浏览器模拟数据，不跨设备共享，也没有支付或真实物流接口。`/api/v1/orders` 返回 404。
+V0.6 实现托管身份、角色、商品、素材与云端模拟订单、发货、售后。订单按登录身份跨设备读取；购物车、收藏和客服仍为本机记录。不接支付或真实物流。
 
 API 入口为 `handleApi(request, env)`，使用 Web `Request` / `Response`，由托管路由调用。运行环境需绑定已迁移的 Cloudflare D1 `DB`、私有 R2 `BUCKET`，可配置 `BOOTSTRAP_ADMIN_EMAIL`。数据库结构见 `db/schema.ts`，迁移不包含商品或账户种子。
 
@@ -96,8 +96,51 @@ R2 对象键由服务端生成，数据库记录上传者、类型、大小、�
 
 响应使用数据库已验证的 MIME、`nosniff`、`private, no-store`。GET 支持单段 `bytes=start-end`、开放结尾和后缀 Range，成功 206 附 `Content-Range`；越界或无效单段返回 416 和 `Content-Range: bytes */总长`。多段或未知单位回退完整 200；不匹配的 `If-Range` 回退完整内容。HEAD 无正文，描述完整长度并忽略 Range，不绕过权限。R2 对象必须存在且长度与登记记录一致。
 
+## 云端模拟订单与售后（V0.6）
+
+以下接口均需受信登录身份。买家接口只访问当前用户的订单（管理员身份调用买家接口也不能读取他人的订单）；管理接口允许管理员管理全部订单、商家管理其商品所属订单。未知或他人的订单统一404，匿名401、无管理角色调用后台403。买家响应不包含内部 `merchantNote`，也不包含买卖双方的稳定内部ID。
+
+`GET /api/v1/orders`、`GET /api/v1/admin/orders` 返回 `{orders, updatedAt, nextCursor}`。每页最多100笔，按创建时间和编号降序；有后续页时将返回的游标原样URL编码传入 `?cursor=...`。`GET` 同一路径下 `/:id` 返回 `{order}`。所有读取均不缓存。
+
+`POST /api/v1/orders/quote`：
+
+```json
+{"items":[{"productId":"jingtai-apple","variant":"small","quantity":1}],"address":"gansu"}
+```
+
+返回 `{quote:{items,quantity,subtotal,shipping,total,address,productVersions}}`，其中items为服务端商品快照，address为地区ID，productVersions为商品ID到整数版本的映射。每单1–12种规格，每规格1–10份，不允许重复行。只支持 `gansu`、`shaanxi` 示例地区，模拟运费分别为600分、1000分；不收集真实地址。商品须已发布，跨商家组合返回422 `mixed_merchants`，请分开下单。
+
+`POST /api/v1/orders` 接收同样的items/address，并增加：
+
+```json
+{
+  "items":[{"productId":"jingtai-apple","variant":"small","quantity":1}],
+  "address":"gansu",
+  "expectedTotal":5480,
+  "productVersions":{"jingtai-apple":3},
+  "idempotencyKey":"ORDER-客户端生成的唯一UUID"
+}
+```
+
+金额和版本仅为请求示例，实际从quote响应取得。客户端不能指定订单ID、归属、状态或价格。服务端重新读取当前商品计算快照，并在单条 `INSERT SELECT` 中再次检查版本、归属与上架状态；变化返回409 `quote_changed`。前端金额变化后须重新确认，不能静默按新价提交。
+
+创建成功201 `{order,replayed:false}`。同买家+同幂等键+同规范化参数重试返回200 `{order,replayed:true}`，即使商品随后已下架，也返回原订单；同键不同参数409 `idempotency_conflict`。失败响应或响应丢失时保留原请求重试，不自动更换key。
+
+订单保留下单时名称、图片引用、规格、单价、数量、运费、合计、示例地区和时间；编号为 `DEMO-大写UUID`，另带 `version`、`updatedAt`。主状态 `created/cancelled`，发货位于 `fulfillment`，当前售后位于 `afterSale`。`afterSaleHistory` 追加每次申请、撤回和处理后的完整售后快照（同一售后ID可有多个状态），不覆盖历史。没有支付状态、库存扣减、真实运单或实际退款。
+
+| POST 路径 | 正文字段（均必带expectedVersion） | 权限及行为 |
+| --- | --- | --- |
+| `/api/v1/orders/:id/cancel` | `expectedVersion` | 本人取消未发货、无待售后、未完成整单退款的订单 |
+| `/api/v1/orders/:id/aftersale` | `expectedVersion,type,reason,description,hasEvidence` | 本人申请；type为refund/replacement；reason为damaged/spec/delivery/other；description最多300字；hasEvidence为模拟凭证布尔值，不上传真实凭证 |
+| `/api/v1/orders/:id/aftersale/withdraw` | `expectedVersion` | 本人撤回待处理售后 |
+| `/api/v1/admin/orders/:id/ship` | `expectedVersion,carrier,tracking` | 授权后台模拟发货；carrier最多40字，tracking必须为DEMO-开头演示单号 |
+| `/api/v1/admin/orders/:id/note` | `expectedVersion,note` | 授权后台保存最多300字内部备注 |
+| `/api/v1/admin/orders/:id/aftersale/resolve` | `expectedVersion,reply` | 授权后台处理待售后；reply最多300字，买家可见，不发生退款或补发 |
+
+成功均返回 `{order}` 并递增版本；SQL按 `id+expectedVersion+归属` 条件原子更新。陈旧版本409 `version_conflict`，不允许静默覆盖；非法状态409 `order_state_invalid`。已取消、重复发货、待处理售后或整单模拟退款完成的订单均不能发货；退款完成后不能再次申请或取消。售后历史达到100条后不再接受新申请，但仍可处理已有待办。没有云端清空/删除/自动样例订单接口。
+
 ## 验证范围
 
 `tests/cloud-api.test.mjs` 将真实 `drizzle/*.sql` 迁移应用到 Node SQLite，再以薄 D1 适配层调用同一个 handler；R2 用内存对象存储适配，测试字节为自有临时数据。覆盖管理员首次引导、角色撤销、并发版本、数据库约束、跨账户拒绝、上传签名/大小/流取消、失败清理及素材可见性与 Range。
 
-这些自动化测试不替代 Sites dispatch、真实 D1/R2、托管登录或手机实际文件上传/播放验收。云端商品和素材的跨设备联动应在部署后单独验证；当前阶段不得声称订单也已云同步。
+这些自动化测试不替代 Sites dispatch、真实 D1/R2、托管登录或手机实际文件上传/播放验收。云端商品和素材的跨设备联动应在部署后单独验证；V0.6 订单使用 D1 独立持久化，真实手机交互仍需单独验收。

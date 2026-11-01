@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const users = sqliteTable('users', {
   id: text('user_id').primaryKey(),
@@ -54,4 +54,26 @@ export const products = sqliteTable('products', {
   check('products_status_valid', sql`${table.status} in ('draft', 'published', 'offline')`),
   check('products_version', sql`${table.version} >= 1 and ${table.version} <= 9007199254740991`),
   check('products_json', sql`json_valid(${table.productJson})`)
+]);
+
+// One merchant per combined simulated order. Snapshots outlive catalog changes.
+export const orders = sqliteTable('orders', {
+  id: text('id').primaryKey(),
+  buyerId: text('buyer_id').notNull().references(() => users.id),
+  sellerId: text('seller_id').notNull().references(() => users.id),
+  requestKey: text('request_key').notNull(),
+  requestJson: text('request_json').notNull(),
+  orderJson: text('order_json').notNull(),
+  version: integer('version').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull()
+}, table => [
+  uniqueIndex('orders_buyer_request').on(table.buyerId, table.requestKey),
+  index('orders_buyer_created').on(table.buyerId, table.createdAt, table.id),
+  index('orders_seller_created').on(table.sellerId, table.createdAt, table.id),
+  index('orders_created').on(table.createdAt, table.id),
+  check('orders_version', sql`${table.version} >= 1 and ${table.version} <= 9007199254740991`),
+  check('orders_request_json', sql`json_valid(${table.requestJson})`),
+  check('orders_snapshot_json', sql`json_valid(${table.orderJson})`),
+  check('orders_status', sql`json_extract(${table.orderJson}, '$.status') in ('created', 'cancelled')`)
 ]);

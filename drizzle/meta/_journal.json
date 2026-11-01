@@ -8,6 +8,13 @@
       "when": 1793500486178,
       "tag": "0000_clear_gorilla_man",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1793503715979,
+      "tag": "0001_aspiring_reaper",
+      "breakpoints": true
     }
   ]
 }

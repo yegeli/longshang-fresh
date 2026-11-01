@@ -228,7 +228,7 @@ test('mutations require same-origin requests and the correct content type; unava
   await status(await f.save(MERCHANT, f.product(), 0, { origin: 'https://evil.test' }), 403);
   await status(await f.save(MERCHANT, f.product(), 0, { headers: { 'Content-Type': 'text/plain' } }), 415);
   await status(await f.call('/admin/products/own-product', { method: 'PUT', user: MERCHANT, body: '{bad-json', headers: { 'Content-Type': 'application/json' } }), 400);
-  await status(await f.call('/orders'), 404);
+  await status(await f.call('/orders'), 401);
   await status(await f.call('/session', { method: 'POST', body: {} }), 405);
   await status(await f.call('/media?kind=image', { method: 'OPTIONS' }), 405);
   f.DB.failSQL = sql => /INSERT INTO products/.test(sql);

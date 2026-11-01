@@ -2,6 +2,7 @@ import { CATALOG, getProduct, money, STORAGE_KEY, ADDRESSES, validOrders, orderI
 import { CATALOG_KEY, readCatalog, saveProduct, setProductStatus, newProductTemplate, parsePrice, refreshCatalog, getProductVersion } from './catalog-store.js';
 import { hydrateMedia, imageFor, videoFor, saveMedia, mediaErrorFor } from './media-store.js';
 import { initializeCloudMode, getCloudState, isCloudMode, apiRequest, authHref } from './cloud-client.js';
+import { loadCloudOrders, loadCloudOrder, mutateCloudOrder } from './order-store.js';
 import { esc, icon } from './ui.js';
 
 const app = document.querySelector('#admin-app');
@@ -23,7 +24,8 @@ const state = {
   view: 'overview', products: [], orders: [], errors: {}, editor: null, drawer: null,
   productsFilter: { query: '', category: 'all', status: 'all' },
   ordersFilter: { query: '', status: 'all' }, aftersalesFilter: { query: '', status: 'all' },
-  externalChanged: false, mediaIssues: [], busy: false, ready: false, syncing: false
+  externalChanged: false, mediaIssues: [], busy: false, ready: false, syncing: false,
+  ordersSyncedAt: '', accountId: null, accessRole: null
 };
 let toastTimer;
 let lastFocused;
@@ -31,6 +33,7 @@ let lastFocused;
 const clone = value => JSON.parse(JSON.stringify(value));
 const dateText = value => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value));
 const textError = error => error?.message || '操作未完成，请重试。';
+const lostAccess = error => [401, 403].includes(error?.status) || error?.code === 'account_changed';
 const isSample = order => order.id.startsWith('DEMO-SAMPLE-');
 const isShipped = order => order.fulfillment?.status === 'shipped';
 const isRefunded = order => order.afterSale?.status === 'resolved' && order.afterSale.type === 'refund';
@@ -68,13 +71,32 @@ function renderSyncStatus() {
   const cloud = getCloudState(), session = cloud.session;
   const stamp = cloud.lastSyncedAt ? new Date(cloud.lastSyncedAt) : null;
   const time = stamp && Number.isFinite(stamp.getTime()) ? dateText(stamp.toISOString()) : '尚未同步';
+  const ordersTime = state.ordersSyncedAt ? dateText(state.ordersSyncedAt) : '尚未读取';
   node.innerHTML = cloud.mode === 'local'
-    ? '<span class="sync-dot local"></span><div><strong>本机演示模式</strong><small>商品与素材仅保存在当前浏览器</small></div>'
-    : `<span class="sync-dot ${state.syncing ? 'pending' : state.errors.sync ? 'failed' : ''}"></span><div><strong>${state.syncing ? '正在读取云端商品…' : state.errors.sync ? '云端同步未完成' : '云端商品目录'}</strong><small>最近同步：${esc(time)}${session?.user ? ` · ${esc(session.user.name || session.user.email || '已登录')}` : ''}</small></div>${hasAccess() ? '<button class="text-button" data-action="refresh-cloud">刷新</button>' : ''}${session?.user && authHref(session.signOutUrl) ? `<a class="text-button" href="${esc(authHref(session.signOutUrl))}" target="_top">退出</a>` : ''}`;
+    ? '<span class="sync-dot local"></span><div><strong>本机演示模式</strong><small>商品、订单与售后仅保存在当前浏览器</small></div>'
+    : `<span class="sync-dot ${state.syncing ? 'pending' : state.errors.sync || state.errors.orders ? 'failed' : ''}"></span><div><strong>${state.syncing ? '正在读取云端资料…' : state.errors.sync || state.errors.orders ? '云端同步未完成' : '商品、订单与售后 · 云端同步'}</strong><small>商品：${esc(time)} · 订单：${esc(ordersTime)}${session?.user ? ` · ${esc(session.user.name || session.user.email || '已登录')}` : ''}</small></div>${hasAccess() ? '<button class="text-button" data-action="refresh-cloud">刷新</button>' : ''}${session?.user && authHref(session.signOutUrl) ? `<a class="text-button" href="${esc(authHref(session.signOutUrl))}" target="_top">退出</a>` : ''}`;
   const note = document.querySelector('#workspace-mode-note');
-  if (note) note.textContent = cloud.mode === 'local' ? '商品与素材保存在当前浏览器，不会同步服务器。订单与售后均为本机模拟。' : '商品与素材保存云端。订单与售后仍为本机模拟，暂未同步云端。';
+  if (note) note.textContent = cloud.mode === 'local' ? '商品、素材、订单与售后保存在当前浏览器，不会同步服务器。' : '商品、素材、模拟订单与售后保存云端，手机和电脑登录同一账号可同步查看。';
   const notice = document.querySelector('#scope-notice');
-  if (notice) notice.textContent = cloud.mode === 'local' ? '本机模拟数据，不会真实收款、退款或发货。' : '商品与素材云端同步；本机模拟订单／售后暂未同步云端，无真实支付或物流。';
+  if (notice) notice.textContent = cloud.mode === 'local' ? '本机模拟数据，不会真实收款、退款或发货。' : '模拟订单、发货与售后云端同步，不接支付，不会真实发货、退款或补发。';
+}
+function clearPrivateState() {
+  state.products = []; state.orders = []; state.ordersSyncedAt = ''; state.drawer = null; state.editor = null;
+  state.externalChanged = false; state.accountId = null; state.accessRole = null;
+  drawerRoot.innerHTML = ''; document.body.classList.remove('drawer-open');
+  // Clear already-rendered private content before any new-account request awaits.
+  app.innerHTML = '<div class="initial-state">正在重新读取当前账号的店铺资料…</div>';
+  nav.hidden = true; alerts.innerHTML = '';
+  clearTimeout(toastTimer); toastElement.textContent = ''; toastElement.hidden = true;
+}
+function verifyCurrentAccount() {
+  const session = getCloudState().session;
+  if (isCloudMode() && (!session?.user || !session.canManage || !['admin', 'merchant'].includes(session.role))) { clearPrivateState(); return false; }
+  const current = isCloudMode() ? session.user.id : 'local';
+  const role = isCloudMode() ? session.role : 'local';
+  if (state.accountId !== null && (state.accountId !== current || state.accessRole !== role)) clearPrivateState();
+  state.accountId = current; state.accessRole = role;
+  return true;
 }
 function renderGate(error = '') {
   nav.hidden = true; drawerRoot.innerHTML = ''; alerts.innerHTML = '';
@@ -87,33 +109,41 @@ function renderGate(error = '') {
   renderSyncStatus();
 }
 async function boot(force = false) {
+  clearPrivateState();
   state.ready = false; renderGate();
   try {
     await initializeCloudMode({ force });
     state.ready = true;
-    if (!hasAccess()) { renderGate(); return; }
+    if (!verifyCurrentAccount() || !hasAccess()) { renderGate(); return; }
     await refreshCatalog({ admin: isCloudMode() });
     loadData();
+    if (isCloudMode()) { try { await loadRemoteOrders(); } catch (error) { if (lostAccess(error)) throw error; } }
     if (!isCloudMode() && !state.errors.orders && !state.errors.catalog) seedSamples();
-    await loadMedia(); render();
-  } catch (error) { state.ready = false; state.errors.sync = textError(error); renderGate(textError(error)); }
+    await loadMedia(); delete state.errors.sync; render();
+  } catch (error) { clearPrivateState(); state.ready = false; state.errors.sync = textError(error); renderGate(textError(error)); }
 }
 async function refreshRemote({ manual = false } = {}) {
   if (!hasAccess() || !isCloudMode() || state.syncing || state.busy) return;
   if (!manual && (state.editor || state.drawer)) return;
   if (state.editor) syncEditor(document.querySelector('#product-form'));
+  const previousAccount = state.accountId;
+  const previousRole = state.accessRole;
   state.syncing = true; renderSyncStatus();
   try {
     await initializeCloudMode({ force: true });
-    if (!hasAccess()) { renderGate(); return; }
-    await refreshCatalog({ admin: true }); loadData(); await loadMedia(); delete state.errors.sync;
+    if (!verifyCurrentAccount() || !hasAccess()) { renderGate(); return; }
+    await refreshCatalog({ admin: true }); loadData(); await loadRemoteOrders(); await loadMedia(); delete state.errors.sync;
+    if (state.drawer && state.orders.find(order => order.id === state.drawer.id)?.version !== state.drawer.expectedVersion) {
+      state.drawer.externalChanged = true; renderDrawerNotice();
+    }
     if (state.editor) { state.externalChanged = true; renderAlerts(); }
     else if (!state.drawer) render();
-    if (manual) toast(state.editor ? '已读取云端；当前填写内容保留，重新载入前不会覆盖。' : '云端商品已更新');
-  } catch (error) { state.errors.sync = textError(error); if (!getCloudState().session?.canManage) renderGate(textError(error)); else renderAlerts(); }
+    if (manual) toast(state.editor || state.drawer ? '已读取云端；当前填写内容保留，重新载入前不会覆盖。' : '云端商品、订单与售后已更新');
+  } catch (error) { state.errors.sync = textError(error); if (lostAccess(error) || !getCloudState().session?.canManage || (previousAccount !== null && (state.accountId !== previousAccount || state.accessRole !== previousRole))) { clearPrivateState(); state.ready = false; renderGate(textError(error)); } else renderAlerts(); }
   finally { state.syncing = false; renderSyncStatus(); }
 }
 function readOrders() {
+  if (isCloudMode()) throw new Error('云端模式不读取本机订单。');
   let raw;
   try { raw = localStorage.getItem(STORAGE_KEY); }
   catch { throw new Error('无法读取订单。请检查浏览器的本地存储权限。'); }
@@ -125,6 +155,7 @@ function readOrders() {
   } catch { throw new Error('本浏览器的订单数据格式异常，未覆盖原数据。'); }
 }
 function writeOrders(orders) {
+  if (isCloudMode()) throw new Error('云端订单不能写入本机存储。');
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(orders)); }
   catch { throw new Error('订单保存失败。浏览器存储可能已满或被禁用，本次操作没有完成。'); }
 }
@@ -132,8 +163,20 @@ function loadData() {
   if (!hasAccess()) return;
   try { readCatalog(); state.products = [...CATALOG]; delete state.errors.catalog; }
   catch (error) { state.products = [...CATALOG]; state.errors.catalog = textError(error); }
-  try { state.orders = readOrders(); delete state.errors.orders; }
-  catch (error) { state.errors.orders = textError(error); }
+  if (!isCloudMode()) {
+    try { state.orders = readOrders(); delete state.errors.orders; }
+    catch (error) { state.errors.orders = textError(error); }
+  }
+}
+async function loadRemoteOrders() {
+  try {
+    const data = await loadCloudOrders({ manager: true });
+    const existing = new Map(state.orders.map(order => [order.id, order]));
+    // An older in-flight read must not undo a write that just succeeded.
+    state.orders = data.orders.map(order => existing.get(order.id)?.version > order.version ? existing.get(order.id) : order);
+    state.ordersSyncedAt = data.lastSyncedAt;
+    delete state.errors.orders;
+  } catch (error) { state.errors.orders = `订单与售后未同步：${textError(error)}`; throw error; }
 }
 async function loadMedia() {
   try {
@@ -201,7 +244,7 @@ function overview() {
     <div class="metric-grid">
       ${[[state.products.filter(p => (p.status || 'published') === 'published').length, '在售商品', 'products', 'leaf'], [active.length, '有效演示订单', 'orders', 'orders'], [waiting, '待发货订单', 'waiting', 'truck'], [pending, '待处理售后', 'pending', 'chat']].map(([number, label, target, i]) => `<button class="metric-card" data-action="metric" data-target="${target}"><span>${esc(label)} ${icon(i, 20)}</span><strong>${number}<small>${target === 'products' ? '款' : '笔'}</small></strong><em>进入管理 ${icon('arrow', 13)}</em></button>`).join('')}
     </div>
-    <p class="local-scope-note">订单与售后为本机模拟，暂未同步云端；下列金额不代表实际收入。</p><div class="overview-columns"><section class="panel"><div class="panel-heading"><div><h3>最近的订单</h3><p>示例订单与买家端生成的演示订单在这里联动。</p></div><button class="text-button" data-view="orders">查看全部 ${icon('arrow', 14)}</button></div>${orderTable([...state.orders].sort((a,b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 5))}</section>
+    <p class="local-scope-note">${isCloudMode() ? '模拟订单与售后已保存云端，同一账号可跨设备查看。' : '订单与售后为本机模拟。'}下列金额不代表实际收入。</p><div class="overview-columns"><section class="panel"><div class="panel-heading"><div><h3>最近的订单</h3><p>${isCloudMode() ? '买家云端下单后，可在这里查看并处理发货与售后。' : '示例订单与买家端生成的演示订单在这里联动。'}</p></div><button class="text-button" data-view="orders">查看全部 ${icon('arrow', 14)}</button></div>${orderTable([...state.orders].sort((a,b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 5))}</section>
     <aside class="overview-side"><section class="money-card"><span class="eyebrow">模拟订单金额</span><strong>¥${money(total)}</strong><p>有效订单合计，含演示运费；不含已取消及模拟退款完成的订单，不代表真实收入。</p></section><section class="panel daily-note"><span class="eyebrow">今天可以先做</span><h3>让好物好买，<br>也让服务跟得上。</h3><ol><li>核对商品规格与素材</li><li>处理待发货的演示订单</li><li>为售后留下清楚的处理意见</li></ol><button class="secondary" data-view="aftersales">去看售后 ${icon('arrow', 14)}</button></section></aside></div>`;
 }
 function searchToolbar(kind, placeholder, extra = '') {
@@ -243,18 +286,18 @@ function matchesOrder(order, filter) {
   return (!filter.query || searchable.includes(filter.query.toLowerCase())) && (filter.status === 'all' || orderStatus(order) === filter.status);
 }
 function orderTable(orders) {
-  if (!orders.length) return empty('暂时没有订单', '在买家页面生成演示订单后，可回到这里处理。');
+  if (!orders.length) return `${empty(state.errors.orders ? '订单暂时无法读取' : '暂时没有订单', state.errors.orders ? '请点击上方重新读取，确认成功后再处理订单。' : isCloudMode() ? '去买家页面模拟下单，再回到这里刷新处理。不会自动导入本机示例订单。' : '在买家页面生成演示订单后，可回到这里处理。')}${isCloudMode() && !state.errors.orders ? '<a class="cloud-order-link" href="./#/home" target="_blank" rel="noopener">去买家页面模拟下单 ↗</a>' : ''}`;
   return `<div class="table-wrap"><table class="admin-table orders-table"><thead><tr><th>订单与商品</th><th>订单金额</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>${orders.map(order => `<tr><td data-label="订单"><div class="order-cell"><button class="order-id" data-action="open-order" data-id="${esc(order.id)}">${esc(order.id)}</button><p>${esc(orderItems(order).map(item => `${item.product} ×${item.quantity}`).join('、'))}</p>${isSample(order) ? '<small>后台示例 · 无真实客户</small>' : '<small>买家端演示订单</small>'}</div></td><td data-label="订单金额"><strong class="table-money">¥${money(order.total)}</strong><small class="cell-note">含演示运费 ¥${money(order.shipping)}</small></td><td data-label="状态"><div class="badge-stack">${badge(orderStatusName(order), orderStatus(order))}${order.afterSale?.status === 'submitted' ? badge('售后待处理', 'warning') : ''}</div></td><td data-label="创建时间">${dateText(order.createdAt)}</td><td data-label="操作"><button class="text-button" data-action="open-order" data-id="${esc(order.id)}">查看详情 ${icon('arrow', 13)}</button></td></tr>`).join('')}</tbody></table></div>`;
 }
 function ordersPage() {
   const f = state.ordersFilter;
   const list = state.orders.filter(order => matchesOrder(order, f)).sort((a,b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-  return `${sectionIntro('LOCAL DEMO ORDERS', '本机模拟订单', '暂未同步云端。仅核对本浏览器的模拟订单、备注与发货记录。')}<section class="panel">${searchToolbar('orders', '搜索订单号或商品', `<label class="select-control"><span>状态</span><select data-filter="orders" name="status" aria-label="订单状态">${options({ waiting:'待发货', shipped:'已发货', cancelled:'已取消', refunded:'模拟退款完成' }, f.status, '全部状态')}</select></label>`)}<div class="table-caption">共 ${list.length} 笔订单<span>演示订单，不对应真实收款或客户。</span></div>${orderTable(list)}</section>`;
+  return `${sectionIntro(isCloudMode() ? 'CLOUD DEMO ORDERS' : 'LOCAL DEMO ORDERS', isCloudMode() ? '云端模拟订单' : '本机模拟订单', isCloudMode() ? '买家下单、商家备注与模拟发货统一保存云端，刷新即可同步。' : '仅核对本浏览器的模拟订单、备注与发货记录。')}<section class="panel">${searchToolbar('orders', '搜索订单号或商品', `<label class="select-control"><span>状态</span><select data-filter="orders" name="status" aria-label="订单状态">${options({ waiting:'待发货', shipped:'已发货', cancelled:'已取消', refunded:'模拟退款完成' }, f.status, '全部状态')}</select></label>`)}<div class="table-caption">共 ${list.length} 笔订单<span>演示订单，不对应真实收款或客户。</span></div>${orderTable(list)}</section>`;
 }
 function aftersalesPage() {
   const f = state.aftersalesFilter;
   const list = state.orders.filter(order => order.afterSale && (f.status === 'all' || f.status === order.afterSale.status) && (!f.query || [order.id,order.afterSale.id,...orderItems(order).map(item => item.product)].join(' ').toLowerCase().includes(f.query.toLowerCase()))).sort((a,b) => Date.parse(b.afterSale.updatedAt) - Date.parse(a.afterSale.updatedAt));
-  return `${sectionIntro('LOCAL DEMO AFTER SALES', '本机模拟售后', '暂未同步云端。看清本机模拟问题、核对整单金额，再留下处理意见。')}<section class="panel">${searchToolbar('aftersales', '搜索订单号、售后号或商品', `<label class="select-control"><span>状态</span><select data-filter="aftersales" name="status" aria-label="售后状态">${options(afterStatuses, f.status, '全部状态')}</select></label>`)}<div class="table-caption">共 ${list.length} 笔售后<span>模拟退款和补发均不会产生真实资金或物流操作。</span></div>${list.length ? `<div class="table-wrap"><table class="admin-table after-table"><thead><tr><th>售后申请</th><th>方式与原因</th><th>整单金额</th><th>状态</th><th>操作</th></tr></thead><tbody>${list.map(order => `<tr><td data-label="售后申请"><div class="order-cell"><button class="order-id" data-action="open-after" data-id="${esc(order.id)}">${esc(order.afterSale.id)}</button><p>${esc(order.product)}</p><small>${esc(order.id)}</small></div></td><td data-label="方式与原因"><div>${order.afterSale.type === 'refund' ? '整单模拟退款' : '整单模拟补发'}</div><small class="cell-note">${afterReasons[order.afterSale.reason]}</small></td><td data-label="整单金额"><strong class="table-money">¥${money(order.total)}</strong></td><td data-label="状态">${badge(afterStatuses[order.afterSale.status], order.afterSale.status)}</td><td data-label="操作"><button class="text-button" data-action="open-after" data-id="${esc(order.id)}">${order.afterSale.status === 'submitted' ? '去处理' : '查看记录'} ${icon('arrow', 13)}</button></td></tr>`).join('')}</tbody></table></div>` : empty('暂时没有售后记录', '买家端提交演示售后后，会在这里显示。')}</section>`;
+  return `${sectionIntro(isCloudMode() ? 'CLOUD DEMO AFTER SALES' : 'LOCAL DEMO AFTER SALES', isCloudMode() ? '云端模拟售后' : '本机模拟售后', isCloudMode() ? '买家申请、撤回与商家处理意见保存云端，同一账号跨设备可查看进度。' : '看清本机模拟问题、核对整单金额，再留下处理意见。')}<section class="panel">${searchToolbar('aftersales', '搜索订单号、售后号或商品', `<label class="select-control"><span>状态</span><select data-filter="aftersales" name="status" aria-label="售后状态">${options(afterStatuses, f.status, '全部状态')}</select></label>`)}<div class="table-caption">共 ${list.length} 笔售后<span>模拟退款和补发均不会产生真实资金或物流操作。</span></div>${list.length ? `<div class="table-wrap"><table class="admin-table after-table"><thead><tr><th>售后申请</th><th>方式与原因</th><th>整单金额</th><th>状态</th><th>操作</th></tr></thead><tbody>${list.map(order => `<tr><td data-label="售后申请"><div class="order-cell"><button class="order-id" data-action="open-after" data-id="${esc(order.id)}">${esc(order.afterSale.id)}</button><p>${esc(order.product)}</p><small>${esc(order.id)}</small></div></td><td data-label="方式与原因"><div>${order.afterSale.type === 'refund' ? '整单模拟退款' : '整单模拟补发'}</div><small class="cell-note">${afterReasons[order.afterSale.reason]}</small></td><td data-label="整单金额"><strong class="table-money">¥${money(order.total)}</strong></td><td data-label="状态">${badge(afterStatuses[order.afterSale.status], order.afterSale.status)}</td><td data-label="操作"><button class="text-button" data-action="open-after" data-id="${esc(order.id)}">${order.afterSale.status === 'submitted' ? '去处理' : '查看记录'} ${icon('arrow', 13)}</button></td></tr>`).join('')}</tbody></table></div>` : empty(state.errors.orders ? '售后暂时无法读取' : '暂时没有售后记录', state.errors.orders ? '请重新读取云端订单，未确认成功时不要重复操作。' : '买家端提交演示售后后，会在这里显示。')}</section>`;
 }
 function itemList(order) {
   return `<div class="drawer-items">${orderItems(order).map(item => `<div class="drawer-item"><img src="${esc(imageFor(item))}" alt="${esc(item.product)}"><div><strong>${esc(item.product)}</strong><p>${esc(item.variantLabel)} · ${esc(item.weight)}</p><small>¥${money(item.unitPrice)} × ${item.quantity}</small></div><b>¥${money(item.subtotal)}</b></div>`).join('')}</div>`;
@@ -266,28 +309,42 @@ function renderDrawer() {
   const d = state.drawer;
   document.body.classList.toggle('drawer-open', !!d);
   if (!d) { drawerRoot.innerHTML = ''; return; }
-  const order = state.orders.find(item => item.id === d.id);
+  // Preserve the exact read/version that the merchant opened, even when the list refreshes.
+  const order = d.order;
   if (!order) { state.drawer = null; drawerRoot.innerHTML = ''; document.body.classList.remove('drawer-open'); return; }
   const address = ADDRESSES.find(item => item.id === order.address);
   const isAfter = d.type === 'after';
-  drawerRoot.innerHTML = `<div class="drawer-overlay"><button class="drawer-backdrop" data-action="close-drawer" aria-label="关闭详情"></button><section class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1"><header class="drawer-heading"><div><span class="eyebrow">${isAfter ? 'AFTER SALES' : 'ORDER DETAIL'}</span><h2 id="drawer-title">${isAfter ? '售后处理详情' : '订单详情'}</h2></div><button class="icon-button" data-action="close-drawer" aria-label="关闭详情">${icon('close', 22)}</button></header><div class="drawer-body"><div class="detail-status"><div>${badge(isAfter ? afterStatuses[order.afterSale?.status] : orderStatusName(order), isAfter ? order.afterSale?.status : orderStatus(order))}<strong>${esc(isAfter ? order.afterSale?.id : order.id)}</strong></div><p>${isSample(order) ? '后台示例订单，无真实客户。' : '买家端生成的本浏览器演示订单。'}</p></div>${itemList(order)}${bill(order)}
+  drawerRoot.innerHTML = `<div class="drawer-overlay"><button class="drawer-backdrop" data-action="close-drawer" aria-label="关闭详情"></button><section class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1"><header class="drawer-heading"><div><span class="eyebrow">${isAfter ? 'AFTER SALES' : 'ORDER DETAIL'}</span><h2 id="drawer-title">${isAfter ? '售后处理详情' : '订单详情'}</h2></div><button class="icon-button" data-action="close-drawer" aria-label="关闭详情">${icon('close', 22)}</button></header><div class="drawer-body"><div id="drawer-sync-notice"></div><div class="detail-status"><div>${badge(isAfter ? afterStatuses[order.afterSale?.status] : orderStatusName(order), isAfter ? order.afterSale?.status : orderStatus(order))}<strong>${esc(isAfter ? order.afterSale?.id : order.id)}</strong></div><p>${isSample(order) ? '后台示例订单，无真实客户。' : isCloudMode() ? `买家端云订单 · 版本 ${d.expectedVersion} · 不对应真实资金与物流。` : '买家端生成的本浏览器演示订单。'}</p></div>${itemList(order)}${bill(order)}
     ${isAfter ? afterDetail(order, d) : `<section class="detail-section"><h3>示例收货信息</h3><div class="address-detail">${icon('pin', 20)}<div><strong>${esc(address?.person || '体验用户')} · ${esc(address?.label || '')}</strong><p>${esc(address?.address || '示例地址')}</p><small>仅示例地区，不含真实收件资料。</small></div></div></section><section class="detail-section"><h3>订单时间</h3><p class="detail-copy">创建于 ${dateText(order.createdAt)}</p>${isShipped(order) ? `<p class="detail-copy">模拟发货于 ${dateText(order.fulfillment.shippedAt)}</p><dl class="shipping-meta"><div><dt>演示物流</dt><dd>${esc(order.fulfillment.carrier)}</dd></div><div><dt>演示单号</dt><dd>${esc(order.fulfillment.tracking)}</dd></div></dl>` : ''}</section><section class="detail-section"><h3>商家备注</h3><form id="order-note-form"><label class="sr-only" for="merchant-note">商家备注，最多300字</label><textarea id="merchant-note" name="note" rows="3" maxlength="300" placeholder="写下需要留意的处理信息…">${esc(d.note)}</textarea><button class="secondary small" type="submit">保存备注</button></form></section>${order.afterSale ? `<button class="linked-after" data-action="open-after" data-id="${esc(order.id)}"><div><strong>${afterStatuses[order.afterSale.status]} · ${order.afterSale.type === 'refund' ? '模拟退款' : '模拟补发'}</strong><span>查看问题与处理记录</span></div>${icon('arrow', 17)}</button>` : ''}${isWaiting(order) ? `<section class="detail-section shipping-section"><h3>模拟发货</h3>${order.afterSale?.status === 'submitted' ? '<p class="form-warning">有待处理售后，请先处理或由买家撤回申请。</p>' : `<form id="ship-form"><div class="form-grid">${field('物流名称', 'carrier', d.carrier, 'required maxlength="40"')}${field('演示单号', 'tracking', d.tracking, 'required maxlength="80" placeholder="DEMO-开头的演示单号"')}</div><p class="field-help">仅保存演示物流记录，不会通知快递或生成真实运单。</p><button type="submit" class="primary wide">确认模拟发货</button></form>`}</section>` : ''}`}
-    <div id="drawer-error" class="field-error" role="alert">${esc(d.error || '')}</div></div></section></div>`;
+    ${isAfter ? '' : afterHistory(order)}<div id="drawer-error" class="field-error" role="alert">${esc(d.error || '')}</div></div></section></div>`;
+  renderDrawerNotice();
+  drawerRoot.querySelectorAll('[type="submit"]').forEach(button => { button.disabled = state.busy || !!d.conflict; });
   wireMediaErrors(drawerRoot);
+}
+function renderDrawerNotice() {
+  const d = state.drawer, node = document.querySelector('#drawer-sync-notice');
+  if (!d || !node || !isCloudMode()) return;
+  node.innerHTML = `<div class="drawer-sync-note ${d.externalChanged || d.conflict ? 'changed' : ''}"><p>${d.conflict ? '这笔订单已在其他设备更新，当前填写内容已保留。请先放弃当前填写并重新读取，再决定下一步。' : d.externalChanged ? '云端已有较新记录，当前详情和填写内容仍保留。重新读取会放弃本页尚未保存的内容。' : '当前为打开详情时的记录。发货、备注和售后保存时会校验版本，避免覆盖其他设备的操作。'}</p><button class="text-button" data-action="reload-order">${d.conflict || d.externalChanged ? '放弃当前填写并重新读取' : '重新读取订单详情'}</button></div>`;
+}
+function afterHistory(order) {
+  const history = Array.isArray(order.afterSaleHistory) ? order.afterSaleHistory : [];
+  if (!history.length) return '';
+  return `<section class="detail-section after-history"><h3>售后历史记录</h3><ol>${history.map(after => `<li><div><strong>${esc(afterStatuses[after.status] || '售后更新')} · ${after.type === 'refund' ? '模拟退款' : '模拟补发'}</strong><time>${dateText(after.updatedAt || after.createdAt)}</time></div><small>${esc(after.id)}</small><p>${esc(after.merchantReply || after.description || (after.status === 'withdrawn' ? '买家已撤回申请。' : '该次售后状态已记录。'))}</p></li>`).join('')}</ol></section>`;
 }
 function afterDetail(order, d) {
   const after = order.afterSale;
   if (!after) return '';
-  return `<section class="detail-section"><h3>申请内容</h3><dl class="after-facts"><div><dt>关联订单</dt><dd>${esc(order.id)}</dd></div><div><dt>申请方式</dt><dd>${after.type === 'refund' ? '整单模拟退款' : '整单模拟补发'}</dd></div><div><dt>申请原因</dt><dd>${afterReasons[after.reason]}</dd></div><div><dt>申请时间</dt><dd>${dateText(after.createdAt)}</dd></div><div><dt>演示凭证</dt><dd>${after.hasEvidence ? '买家标记有演示凭证，不代表上传了真实文件' : '未提供演示凭证'}</dd></div></dl><div class="customer-description">${esc(after.description || '未填写补充描述。')}</div></section><section class="detail-section"><h3>处理意见</h3>${after.status === 'submitted' ? `<form id="resolve-form"><label class="sr-only" for="after-reply">售后处理意见，最多300字</label><textarea id="after-reply" name="reply" rows="4" maxlength="300" required placeholder="说明已核对的问题，以及本次模拟处理结果。">${esc(d.reply)}</textarea><p class="field-help">${after.type === 'refund' ? `按整单金额 ¥${money(order.total)} 标记模拟退款完成，不实际退钱。` : '标记模拟补发完成，不生成真实物流或补发包裹。'}</p><button type="submit" class="primary wide">${after.type === 'refund' ? '确认模拟退款完成' : '确认模拟补发完成'}</button></form>` : `<div class="reply-record"><p>${esc(after.merchantReply || (after.status === 'withdrawn' ? '申请已由买家撤回，无需继续处理。' : '该演示售后已标记完成，未填写处理意见。'))}</p><small>更新于 ${dateText(after.updatedAt)}</small></div>`}</section><button class="text-button" data-action="open-order" data-id="${esc(order.id)}">${icon('back', 14)} 返回订单详情</button>`;
+  return `<section class="detail-section"><h3>申请内容</h3><dl class="after-facts"><div><dt>关联订单</dt><dd>${esc(order.id)}</dd></div><div><dt>申请方式</dt><dd>${after.type === 'refund' ? '整单模拟退款' : '整单模拟补发'}</dd></div><div><dt>申请原因</dt><dd>${afterReasons[after.reason]}</dd></div><div><dt>申请时间</dt><dd>${dateText(after.createdAt)}</dd></div><div><dt>演示凭证</dt><dd>${after.hasEvidence ? '买家标记有演示凭证，不代表上传了真实文件' : '未提供演示凭证'}</dd></div></dl><div class="customer-description">${esc(after.description || '未填写补充描述。')}</div></section><section class="detail-section"><h3>处理意见</h3>${after.status === 'submitted' ? `<form id="resolve-form"><label class="sr-only" for="after-reply">售后处理意见，最多300字</label><textarea id="after-reply" name="reply" rows="4" maxlength="300" required placeholder="说明已核对的问题，以及本次模拟处理结果。">${esc(d.reply)}</textarea><p class="field-help">${after.type === 'refund' ? `按整单金额 ¥${money(order.total)} 标记模拟退款完成，不实际退钱。` : '标记模拟补发完成，不生成真实物流或补发包裹。'}</p><button type="submit" class="primary wide">${after.type === 'refund' ? '确认模拟退款完成' : '确认模拟补发完成'}</button></form>` : `<div class="reply-record"><p>${esc(after.merchantReply || (after.status === 'withdrawn' ? '申请已由买家撤回，无需继续处理。' : '该演示售后已标记完成，未填写处理意见。'))}</p><small>更新于 ${dateText(after.updatedAt)}</small></div>`}</section>${afterHistory(order)}<button class="text-button" data-action="open-order" data-id="${esc(order.id)}">${icon('back', 14)} 返回订单详情</button>`;
 }
 function closeDrawer() {
+  if (state.busy) return;
   state.drawer = null; renderDrawer(); lastFocused?.focus?.();
 }
 function openDrawer(type, id) {
   const order = state.orders.find(item => item.id === id);
   if (!order || (type === 'after' && !order.afterSale)) return;
   lastFocused = document.activeElement;
-  state.drawer = { type, id, note: order.merchantNote || '', carrier: '演示物流', tracking: `DEMO-${Date.now().toString(36).toUpperCase()}`, reply: order.afterSale?.merchantReply || '', error: '' };
+  state.drawer = { type, id, order: clone(order), expectedVersion: order.version, note: order.merchantNote || '', carrier: '演示物流', tracking: `DEMO-${Date.now().toString(36).toUpperCase()}`, reply: order.afterSale?.merchantReply || '', error: '', externalChanged: false, conflict: false };
   renderDrawer(); drawerRoot.querySelector('.drawer')?.focus();
 }
 function mayLeaveEditor() {
@@ -354,6 +411,7 @@ async function saveEditor(form, mode) {
   } finally { state.busy = false; submitButtons.forEach(button => { button.disabled = false; button.textContent = button.dataset.originalLabel; }); renderSyncStatus(); }
 }
 function mutateOrder(id, transform) {
+  if (isCloudMode()) throw new Error('云端订单必须通过服务器保存。');
   readCatalog();
   const current = readOrders();
   const index = current.findIndex(order => order.id === id);
@@ -362,12 +420,67 @@ function mutateOrder(id, transform) {
   const next = current.map((order,i) => i === index ? result : order);
   const checked = validOrders(next);
   if (checked.length !== next.length || !checked.some(order => order.id === id)) throw new Error('订单校验未通过，本次操作没有保存。');
-  writeOrders(checked); state.orders = checked; render();
+  writeOrders(checked); state.orders = checked;
+  if (state.drawer?.id === id) state.drawer.order = clone(checked.find(order => order.id === id));
+  render();
 }
 function drawerError(error) {
-  if (state.drawer) state.drawer.error = textError(error);
-  const node = document.querySelector('#drawer-error'); if (node) node.textContent = textError(error);
+  const message = error?.status === 409 ? '这笔订单已更新或状态发生变化，填写内容已保留。请先放弃当前填写并重新读取，核对最新状态后再操作。' : textError(error);
+  if (state.drawer) {
+    state.drawer.error = message;
+    if (error?.status === 409) { state.drawer.conflict = true; renderDrawerNotice(); }
+  }
+  const node = document.querySelector('#drawer-error'); if (node) node.textContent = message;
   toast('操作未完成，请查看详情中的提示');
+}
+async function reloadDrawer() {
+  const d = state.drawer;
+  if (!d || !isCloudMode() || state.busy || !window.confirm('重新读取将放弃当前详情中尚未保存的填写内容，确定继续吗？')) return;
+  state.busy = true;
+  try {
+    const order = await loadCloudOrder(d.id, { manager: true });
+    if (state.drawer !== d) return;
+    state.orders = state.orders.map(value => value.id === order.id ? order : value);
+    state.drawer = { ...d, order: clone(order), expectedVersion: order.version, note: order.merchantNote || '', carrier: '演示物流', tracking: `DEMO-${Date.now().toString(36).toUpperCase()}`, reply: order.afterSale?.merchantReply || '', error: '', conflict: false, externalChanged: false };
+    state.ordersSyncedAt = new Date().toISOString();
+    toast('已重新读取云端订单详情');
+  } catch (error) {
+    if (lostAccess(error)) { clearPrivateState(); state.ready = false; renderGate(textError(error)); }
+    else drawerError(error);
+  } finally { state.busy = false; if (state.drawer) renderDrawer(); renderSyncStatus(); }
+}
+async function saveCloudOrderForm(form) {
+  const d = state.drawer;
+  if (!d || state.busy) return;
+  if (d.conflict) { drawerError({ status: 409 }); return; }
+  const data = new FormData(form);
+  const actions = {
+    'order-note-form': ['note', { note: String(data.get('note') || '') }, '商家备注已保存到云端'],
+    'ship-form': ['ship', { carrier: String(data.get('carrier') || ''), tracking: String(data.get('tracking') || '') }, '模拟发货记录已保存到云端'],
+    'resolve-form': ['aftersale/resolve', { reply: String(data.get('reply') || '') }, '售后已在云端标记模拟处理完成']
+  };
+  const action = actions[form.id]; if (!action) return;
+  state.busy = true; d.error = '';
+  const controls = [...drawerRoot.querySelectorAll('input,textarea,button')];
+  const disabled = controls.map(node => node.disabled);
+  controls.forEach(node => { node.disabled = true; });
+  try {
+    const order = await mutateCloudOrder(d.id, action[0], { expectedVersion: d.expectedVersion, ...action[1] }, { manager: true });
+    if (state.drawer !== d) return;
+    state.orders = state.orders.map(value => value.id === order.id ? order : value);
+    d.order = clone(order); d.expectedVersion = order.version; d.externalChanged = false; d.conflict = false;
+    if (form.id === 'order-note-form') d.note = order.merchantNote || '';
+    if (form.id === 'resolve-form') d.reply = order.afterSale?.merchantReply || '';
+    state.ordersSyncedAt = new Date().toISOString(); delete state.errors.orders;
+    toast(action[2]);
+  } catch (error) {
+    if (lostAccess(error)) { clearPrivateState(); state.ready = false; renderGate(textError(error)); }
+    else drawerError(error);
+  } finally {
+    state.busy = false; controls.forEach((node, index) => { node.disabled = disabled[index]; });
+    if (state.drawer === d) render();
+    renderSyncStatus();
+  }
 }
 
 document.addEventListener('click', async event => {
@@ -403,6 +516,7 @@ document.addEventListener('click', async event => {
   } else if (action === 'open-order') openDrawer('order', id);
   else if (action === 'open-after') openDrawer('after', id);
   else if (action === 'close-drawer') closeDrawer();
+  else if (action === 'reload-order') await reloadDrawer();
   else if (action === 'retry-data') {
     if (isCloudMode()) { await refreshRemote({ manual: true }); return; }
     loadData(); loadMedia().then(() => { if (!state.editor) render(); else renderAlerts(); });
@@ -449,11 +563,12 @@ document.addEventListener('change', event => {
   }
   if (target.closest('#product-form') && state.editor && Object.hasOwn(state.editor.values, target.name)) { state.editor.values[target.name] = target.value; markDirty(); }
 });
-document.addEventListener('submit', event => {
+document.addEventListener('submit', async event => {
   event.preventDefault(); if (!hasAccess() || state.busy) return; const form = event.target;
   if (form.id.startsWith('search-')) { const kind = form.id.slice(7); state[`${kind}Filter`].query = String(new FormData(form).get('query') || '').trim(); render(); return; }
   if (form.id === 'product-form') { saveEditor(form, event.submitter?.value || 'published'); return; }
   if (!state.drawer) return;
+  if (isCloudMode()) { await saveCloudOrderForm(form); return; }
   const d = state.drawer; const data = new FormData(form);
   try {
     d.error = '';
@@ -464,7 +579,7 @@ document.addEventListener('submit', event => {
 });
 document.addEventListener('keydown', event => {
   if (!state.drawer) return;
-  if (event.key === 'Escape') { event.preventDefault(); closeDrawer(); return; }
+  if (event.key === 'Escape') { event.preventDefault(); if (!state.busy) closeDrawer(); return; }
   if (event.key === 'Tab') {
     const focusable = [...drawerRoot.querySelectorAll('.drawer button:not([disabled]), .drawer input, .drawer select, .drawer textarea, .drawer a[href]')];
     const first = focusable[0], last = focusable.at(-1);
@@ -475,7 +590,7 @@ document.addEventListener('keydown', event => {
 window.addEventListener('beforeunload', event => { if (state.editor?.dirty) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('storage', async event => {
   if (!hasAccess() || ![CATALOG_KEY, STORAGE_KEY, null].includes(event.key)) return;
-  if (isCloudMode() && event.key === CATALOG_KEY) return;
+  if (isCloudMode()) return;
   loadData(); await loadMedia();
   if (state.editor) { state.externalChanged = true; renderAlerts(); }
   else if (!state.drawer) render();

@@ -372,10 +372,18 @@ function snapshotText(value, fallback) {
   return isPlainText(value, 120) && value.trim() ? value.trim() : fallback;
 }
 
-function cleanOrderItem(item, legacy = false) {
+function cleanOrderItem(item, legacy = false, cloudSnapshot = false) {
   if (!item || typeof item !== 'object') return null;
   const productId = legacy && item.productId === undefined ? 'jingtai-apple' : item.productId;
-  const product = getProduct(productId) || BASE_CATALOG.find(value => value.id === productId);
+  // A versioned server order owns its historical snapshot. Its product may now be
+  // offline, deleted from the public catalog, renamed, or have different prices.
+  if (cloudSnapshot && (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(productId || '')
+    || !['product', 'variantLabel', 'weight'].every(key => typeof item[key] === 'string' && item[key].trim() && item[key].length <= 120)
+    || !['small', 'family'].includes(item.variant)
+    || typeof item.image !== 'string' || !/^assets\/(?!.*\.\.)[a-zA-Z0-9/_-]+\.(jpg|jpeg|png|webp|gif|svg)$/.test(item.image))) return null;
+  const product = cloudSnapshot
+    ? { id: productId, name: item.product, image: item.image, variants: [{ id: item.variant, label: item.variantLabel, weight: item.weight }] }
+    : getProduct(productId) || BASE_CATALOG.find(value => value.id === productId);
   const variant = product?.variants.find(value => value.id === item.variant);
   if (!product || !variant || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 10
     || !['unitPrice', 'subtotal'].every(key => Number.isSafeInteger(item[key]) && item[key] >= 0)
@@ -392,13 +400,14 @@ function cleanOrderItem(item, legacy = false) {
 
 export function orderItems(order) {
   if (!order || typeof order !== 'object') return [];
+  const cloudSnapshot = Number.isSafeInteger(order.version) && order.version >= 1;
   if (order.items !== undefined) {
     if (!Array.isArray(order.items) || !order.items.length || order.items.length > 12) return [];
-    const items = order.items.map(item => cleanOrderItem(item));
+    const items = order.items.map(item => cleanOrderItem(item, false, cloudSnapshot));
     if (items.some(item => !item) || new Set(items.map(item => `${item.productId}::${item.variant}`)).size !== items.length) return [];
     return items;
   }
-  const item = cleanOrderItem(order, true);
+  const item = cleanOrderItem(order, true, cloudSnapshot);
   return item ? [item] : [];
 }
 
