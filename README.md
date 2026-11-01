@@ -4,6 +4,8 @@
 
 **V1.0 完整模拟业务版：买家逛首页／产区／采购者店铺、收藏与加购、按店下单，采购者模拟发货，买家确认收货并申请售后，后台处理后买家查看结果。登录同一账号可同步购物车、收藏、足迹、示例地区偏好、订单和售后。商品、媒体、库存与商家权限沿用云端服务。不接支付、真实快递或退款，尚未发布为微信小程序。**
 
+2026-11-01 已发布托管版本11；270项测试、74项完整流程HTTP检查及GitHub CI通过。
+
 [打开商城演示](https://jingtai-fresh-demo-1031.merry-brush-7565.chatgpt.site/?v=11#/home) · [管理后台](https://jingtai-fresh-demo-1031.merry-brush-7565.chatgpt.site/admin?v=11)。本轮验证和发布结果见 [完整模拟流程验收](docs/QA-COMPLETE-2026-11-01.md)。历史结果保留在 [V0.9 买家端](docs/QA-BUYER-2026-11-01.md)、[V0.8 库存](docs/QA-INVENTORY-2026-11-01.md)、[V0.7 商家账号](docs/QA-MERCHANTS-2026-11-01.md)等记录中。
 
 ## 完整体验一次

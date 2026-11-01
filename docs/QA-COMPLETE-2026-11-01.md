@@ -38,7 +38,13 @@
 
 ## 发布与源码备份
 
-GitHub提交、CI和托管发布结果完成后补记。本机源码检查不代替线上发布核验。
+- 已通过命令推送 [功能提交9a3af7b](https://github.com/yegeli/longshang-fresh/commit/9a3af7b232df729c81dc46b2ae56cfdc8148c2f2)，完整远端SHA已核对。
+- [GitHub CI 41281087865](https://github.com/yegeli/longshang-fresh/actions/runs/41281087865) 成功，Node 22／24检查及独立云构建和迁移全部通过。
+- 2026-11-01 14:31（北京时间）成功发布 [托管版本11商城](https://jingtai-fresh-demo-1031.merry-brush-7565.chatgpt.site/?v=11#/home)及[后台](https://jingtai-fresh-demo-1031.merry-brush-7565.chatgpt.site/admin?v=11)。私有源构建提交 `aad4e6c21962e9f6b839c6c65097398ea5220631`，保存和部署同一份源码及构建包。
+- 线上15份JS／CSS与本次源码逐字节一致；公开目录仍为6款商品、1家实际归属示范店和1家定边筹备示意店，6款商品库存仍未配置且均为0。
+- 云数据库元数据确认新增 `buyer_shopping`、`buyer_order_consumptions` 已存在，旧表保留；未读取或导出用户购物记录，未修改生产商品、订单或库存资料。
+- 匿名访问4个管理接口和购物资料接口均401；买家和后台HTML入口均307登录重定向。验证没有跟随登录或伪造访客身份，登录后的实际UI操作仍属下述未验范围。
+- 访问范围保持1位拥有者、0位外部访客；源码开源不代表站点或业务数据公开。服务凭据只在内存传递，未写入源码或GitHub。
 
 ## 尚未作为真实业务验收的范围
 
