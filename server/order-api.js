@@ -1,4 +1,5 @@
 import { ADDRESSES, createAfterSale, updateAfterSale, shipOrder, saveOrderNote, resolveAfterSale } from '../public/model.js';
+import { hasPermission, managementGuard, visibleSellerSQL } from './merchant-access.js';
 
 const PREFIX = '/api/v1';
 const ORDER_ID = /^DEMO-[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$/;
@@ -16,7 +17,7 @@ export async function handleOrderApi(request, env, helpers) {
   if (!isAdminPath && path !== `${PREFIX}/orders` && !path.startsWith(`${PREFIX}/orders/`)) return null;
   const { identity, manager, requireDB, sameOrigin, jsonBody, fail, json, method } = helpers;
   const base = `${PREFIX}/${isAdminPath ? 'admin/' : ''}orders`;
-  const user = isAdminPath ? await manager(request, env) : await identity(request, env);
+  const user = isAdminPath ? await manager(request, env, false, ['orders', 'aftersales']) : await identity(request, env);
   if (!user) fail(401, 'sign_in_required', '请先登录，再查看或创建云端模拟订单。');
   const db = requireDB(env);
   const allowed = (body, keys) => {
@@ -26,7 +27,8 @@ export async function handleOrderApi(request, env, helpers) {
     if (!Number.isSafeInteger(value) || value < 1 || value >= Number.MAX_SAFE_INTEGER) fail(400, 'version_invalid', 'expectedVersion 必须为有效的正整数版本。');
     return value;
   };
-  const authorize = row => row && (isAdminPath ? user.role === 'admin' || row.seller_id === user.id : row.buyer_id === user.id);
+  const afterSaleOnly = isAdminPath && !hasPermission(user, 'orders');
+  const authorize = row => row && (isAdminPath ? user.role === 'admin' || (row.seller_id === user.id && (!afterSaleOnly || JSON.parse(row.order_json).afterSale)) : row.buyer_id === user.id);
   const dto = row => {
     const order = JSON.parse(row.order_json);
     if (!isAdminPath) delete order.merchantNote;
@@ -59,7 +61,7 @@ export async function handleOrderApi(request, env, helpers) {
 
   async function quoteFor(selected) {
     const ids = [...new Set(selected.items.map(item => item.productId))];
-    const rows = (await db.prepare(`SELECT id,owner_id,product_json,version,image_media_id FROM products WHERE status='published' AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results || [];
+    const rows = (await db.prepare(`SELECT id,owner_id,product_json,version,image_media_id FROM products WHERE status='published' AND ${visibleSellerSQL('products.owner_id')} AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results || [];
     if (rows.length !== ids.length) fail(409, 'product_unavailable', '选中商品已下架或不存在，请刷新商品后重新确认。');
     if (new Set(rows.map(row => row.owner_id)).size !== 1) fail(422, 'mixed_merchants', '当前模拟订单仅支持同一商家的商品，请按商家分开下单。');
     const byId = new Map(rows.map(row => [row.id, row]));
@@ -91,6 +93,7 @@ export async function handleOrderApi(request, env, helpers) {
     }
     const constraints = isAdminPath ? (user.role === 'admin' ? [] : ['seller_id=?']) : ['buyer_id=?'];
     const values = constraints.length ? [user.id] : [];
+    if (afterSaleOnly) constraints.push("json_type(order_json,'$.afterSale')='object'");
     if (after) { constraints.push('(created_at < ? OR (created_at = ? AND id < ?))'); values.push(after[0], after[0], after[1]); }
     const rows = (await db.prepare(`SELECT * FROM orders ${constraints.length ? `WHERE ${constraints.join(' AND ')}` : ''} ORDER BY created_at DESC,id DESC LIMIT ?`).bind(...values, PAGE_SIZE + 1).all()).results || [];
     const page = rows.slice(0, PAGE_SIZE), last = page.at(-1);
@@ -127,7 +130,7 @@ export async function handleOrderApi(request, env, helpers) {
     const conditions = ids.map(() => "(id=? AND version=? AND status='published' AND owner_id=?)");
     const guardValues = ids.flatMap(id => [id, quote.productVersions[id], sellerId]);
     const saved = await db.prepare(`INSERT INTO orders(id,buyer_id,seller_id,request_key,request_json,order_json,version,created_at,updated_at)
-      SELECT ?,?,?,?,?,?,1,?,? WHERE (SELECT count(*) FROM products WHERE ${conditions.join(' OR ')})=?
+      SELECT ?,?,?,?,?,?,1,?,? WHERE (SELECT count(*) FROM products WHERE (${conditions.join(' OR ')}) AND ${visibleSellerSQL('products.owner_id')})=?
       ON CONFLICT(buyer_id,request_key) DO NOTHING RETURNING *`)
       .bind(order.id, user.id, sellerId, body.idempotencyKey, requestJson, JSON.stringify(order), time, time, ...guardValues, ids.length).first();
     if (!saved) { const retried = await replay(); if (retried) return retried; fail(409, 'quote_changed', '商品在下单时发生变化，请重新获取报价后确认。'); }
@@ -141,6 +144,8 @@ export async function handleOrderApi(request, env, helpers) {
   if (!action) { method(request, ['GET']); return json({ order: dto(await lookup(id)) }); }
   const actions = isAdminPath ? ['ship', 'note', 'aftersale/resolve'] : ['cancel', 'aftersale', 'aftersale/withdraw'];
   if (!actions.includes(action)) fail(404, 'not_found', '接口不存在。');
+  const permission = action === 'aftersale/resolve' ? 'aftersales' : 'orders';
+  if (isAdminPath && !hasPermission(user, permission)) fail(403, 'forbidden', '此账户没有所需订单或售后权限。');
   method(request, ['POST']);
   const body = await readBody();
   allowed(body, { cancel: ['expectedVersion'], aftersale: ['expectedVersion', 'type', 'reason', 'description', 'hasEvidence'],
@@ -163,9 +168,10 @@ export async function handleOrderApi(request, env, helpers) {
     else if (action === 'aftersale/resolve') next = resolveAfterSale(order, body.reply);
   } catch (error) { fail(409, 'order_state_invalid', error.message); }
   if (action.startsWith('aftersale')) next.afterSaleHistory = [...(order.afterSaleHistory || []), { ...next.afterSale }];
-  const ownership = isAdminPath ? (user.role === 'admin' ? '' : ' AND seller_id=?') : ' AND buyer_id=?';
-  const saved = await db.prepare(`UPDATE orders SET order_json=?,version=version+1,updated_at=? WHERE id=? AND version=?${ownership} RETURNING *`)
-    .bind(JSON.stringify(next), now(), id, expected, ...(ownership ? [user.id] : [])).first();
+  const ownership = isAdminPath ? " AND (seller_id=? OR EXISTS(SELECT 1 FROM users WHERE user_id=? AND role='admin'))" : ' AND buyer_id=?';
+  const access = isAdminPath ? ` AND ${managementGuard(permission)}` : '';
+  const saved = await db.prepare(`UPDATE orders SET order_json=?,version=version+1,updated_at=? WHERE id=? AND version=?${ownership}${access} RETURNING *`)
+    .bind(JSON.stringify(next), now(), id, expected, user.id, ...(isAdminPath ? [user.id, user.id] : [])).first();
   if (!saved) fail(409, 'version_conflict', '订单已在其他设备更新，请刷新后重新操作；本次未覆盖。');
   return json({ order: dto(saved) });
 }

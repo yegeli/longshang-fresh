@@ -1,4 +1,4 @@
-import { isCloudMode, apiRequest, requireManager, cloudMediaUrl } from './cloud-client.js';
+import { isCloudMode, apiRequest, requirePermission, managementScopeKey, requireUnchangedScope, cloudMediaUrl } from './cloud-client.js';
 // Local demo uses IndexedDB; cloud mode uses the authenticated media API.
 const DB_NAME = 'longshang-demo-media-v1';
 const STORE = 'files';
@@ -92,20 +92,23 @@ function validatePlayable(file, kind) {
 }
 
 export async function saveMedia(file, kind, { source = '' } = {}) {
+  const scope = isCloudMode() ? managementScopeKey() : null;
   const types = kind === 'image' ? ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] : kind === 'video' ? ['video/mp4', 'video/webm'] : [];
   const limit = kind === 'image' ? 5 : 30;
   if (!(file instanceof Blob) || !types.includes(file.type)) throw new Error(kind === 'image' ? '请选择 JPG、PNG、WebP 或 GIF 图片' : '请选择 MP4 或 WebM 视频');
   if (!file.size || file.size > limit * 1024 * 1024) throw new Error(`文件大小需大于 0 且不超过 ${limit}MB`);
   if (isCloudMode()) {
-    requireManager();
+    requirePermission('products');
     if (typeof source !== 'string' || !source.trim() || source.length > 500) throw new Error('请填写素材来源及授权说明，最多500字');
   }
   await validatePlayable(file, kind);
   if (isCloudMode()) {
+    requireUnchangedScope(scope); requirePermission('products');
     const saved = await apiRequest(`/api/v1/media?kind=${kind}`, { method: 'POST', headers: {
       'Content-Type': file.type, 'X-File-Name': encodeURIComponent(String(file.name || '素材').slice(0,200)),
       'X-Media-Source': encodeURIComponent(source.trim())
     }, body: file });
+    requireUnchangedScope(scope);
     if (!saved?.id || !saved?.url) throw new Error('云端素材响应异常，未替换原素材');
     cache.set(saved.id, { url: saved.url, kind, source: saved.source || source.trim() });
     errors.delete(saved.id); return saved;

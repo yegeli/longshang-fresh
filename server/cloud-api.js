@@ -1,5 +1,7 @@
 import { BASE_CATALOG, normalizeCatalogProduct } from '../public/model.js';
 import { handleOrderApi } from './order-api.js';
+import { handleMerchantApi } from './merchant-api.js';
+import { MERCHANT_PERMISSIONS, merchantDTO, hasPermission, managementGuard, visibleSellerSQL } from './merchant-access.js';
 
 const PREFIX = '/api/v1';
 const SIGN_IN = '/signin-with-chatgpt?return_to=%2Fadmin.html';
@@ -48,15 +50,37 @@ async function identity(request, env) {
       db.prepare("UPDATE users SET role='admin' WHERE user_id=? AND changes()=1 AND EXISTS(SELECT 1 FROM admin_bootstrap WHERE singleton=1 AND user_id=?)").bind(id, id)
     ]);
   } else await insert.run();
-  const user = await db.prepare('SELECT user_id,email,name,role FROM users WHERE user_id=?').bind(id).first();
+  let user = await db.prepare('SELECT user_id,email,name,role FROM users WHERE user_id=?').bind(id).first();
   if (!user || !['buyer', 'merchant', 'admin'].includes(user.role)) fail(403, 'forbidden', '账户权限无效。');
-  return { id: user.user_id, email: user.email, name: user.name, role: user.role };
+  // An email invitation is claimed once; all subsequent access follows the stable
+  // Sites ID. A revoked role is never restored merely by an existing binding.
+  if (user.role !== 'admin') {
+    const pending = await db.prepare('SELECT * FROM merchant_accounts WHERE email=? AND user_id IS NULL AND NOT EXISTS(SELECT 1 FROM merchant_accounts WHERE user_id=?)').bind(email, id).first();
+    if (pending) {
+      const after = { ...merchantDTO(pending), bound: true, version: pending.version + 1, updatedAt: now };
+      await db.batch([
+        db.prepare(`UPDATE merchant_accounts SET user_id=?,version=version+1,updated_at=?,updated_by=? WHERE id=? AND user_id IS NULL AND version=?
+          AND NOT EXISTS(SELECT 1 FROM merchant_accounts WHERE user_id=?) AND EXISTS(SELECT 1 FROM users WHERE user_id=? AND email=? AND role IN ('buyer','merchant'))`)
+          .bind(id, now, id, pending.id, pending.version, id, id, email),
+        db.prepare("UPDATE users SET role='merchant' WHERE user_id=? AND role IN ('buyer','merchant') AND changes()=1").bind(id),
+        db.prepare("INSERT INTO merchant_audit(id,merchant_id,actor_id,action,before_json,after_json,created_at) SELECT ?,?,?,'bound',?,?,? WHERE changes()=1")
+          .bind(`AUDIT-${crypto.randomUUID().toUpperCase()}`, pending.id, id, JSON.stringify(merchantDTO(pending)), JSON.stringify(after), now)
+      ]);
+      user = await db.prepare('SELECT user_id,email,name,role FROM users WHERE user_id=?').bind(id).first();
+    }
+  }
+  const profile = await db.prepare('SELECT * FROM merchant_accounts WHERE user_id=?').bind(id).first();
+  const merchant = profile ? merchantDTO(profile) : null;
+  const permissions = user.role === 'admin' ? [...MERCHANT_PERMISSIONS]
+    : user.role === 'merchant' && merchant?.status === 'enabled' ? merchant.permissions.filter(value => MERCHANT_PERMISSIONS.includes(value)) : [];
+  return { id: user.user_id, email: user.email, name: user.name, role: user.role, merchant, permissions };
 }
 
-async function manager(request, env, adminOnly = false) {
+async function manager(request, env, adminOnly = false, permissions = MERCHANT_PERMISSIONS) {
   const user = await identity(request, env);
   if (!user) fail(401, 'sign_in_required', '请先登录商家账户。');
-  if (adminOnly ? user.role !== 'admin' : !['admin', 'merchant'].includes(user.role)) fail(403, 'forbidden', '此账户没有管理权限。');
+  const required = Array.isArray(permissions) ? permissions : [permissions];
+  if (adminOnly ? user.role !== 'admin' : !required.some(permission => hasPermission(user, permission))) fail(403, 'forbidden', '此账户没有所需管理权限。');
   return user;
 }
 
@@ -148,14 +172,14 @@ function productFromRow(row) { return { ...JSON.parse(row.product_json), version
 async function catalog(db, user = null) {
   const result = user
     ? await db.prepare('SELECT product_json,version,updated_at FROM products WHERE (?=\'admin\' OR owner_id=?) ORDER BY created_at,id').bind(user.role, user.id).all()
-    : await db.prepare("SELECT product_json,version,updated_at FROM products WHERE status='published' ORDER BY created_at,id").all();
+    : await db.prepare(`SELECT product_json,version,updated_at FROM products WHERE status='published' AND ${visibleSellerSQL('products.owner_id')} ORDER BY created_at,id`).all();
   const rows = result.results || [];
   return { products: rows.map(productFromRow), updatedAt: rows.reduce((latest, row) => row.updated_at > latest ? row.updated_at : latest, '') || null };
 }
 
 async function putProduct(request, env, id) {
   sameOrigin(request);
-  const user = await manager(request, env), db = requireDB(env), body = await jsonBody(request);
+  const user = await manager(request, env, false, 'products'), db = requireDB(env), body = await jsonBody(request);
   rejectUnknown(body, new Set(['product', 'expectedVersion']), '请求');
   const expected = body.expectedVersion;
   if (!Number.isSafeInteger(expected) || expected < 0 || expected >= Number.MAX_SAFE_INTEGER) fail(400, 'version_invalid', 'expectedVersion 必须是非负安全整数。');
@@ -168,16 +192,16 @@ async function putProduct(request, env, id) {
   let saved;
   if (!existing) {
     saved = await db.prepare(`INSERT INTO products(id,owner_id,product_json,status,version,image_media_id,video_media_id,created_at,updated_at,updated_by)
-      SELECT ?,?,?,?,1,?,?,?,?,? WHERE (SELECT count(*) FROM products)<200 ON CONFLICT(id) DO NOTHING
-      RETURNING product_json,version,updated_at`).bind(id, user.id, serialized, product.status, product.imageMediaId || null, product.videoMediaId || null, now, now, user.id).first();
+      SELECT ?,?,?,?,1,?,?,?,?,? WHERE (SELECT count(*) FROM products)<200 AND ${managementGuard('products')} ON CONFLICT(id) DO NOTHING
+      RETURNING product_json,version,updated_at`).bind(id, user.id, serialized, product.status, product.imageMediaId || null, product.videoMediaId || null, now, now, user.id, user.id).first();
     if (!saved) {
       const duplicate = await db.prepare('SELECT id FROM products WHERE id=?').bind(id).first();
       fail(duplicate ? 409 : 422, duplicate ? 'version_conflict' : 'catalog_limit', duplicate ? '商品已创建，请刷新后重新编辑。' : '当前目录最多支持200款商品。');
     }
   } else {
     saved = await db.prepare(`UPDATE products SET product_json=?,status=?,version=version+1,image_media_id=?,video_media_id=?,updated_at=?,updated_by=?
-      WHERE id=? AND version=? AND (?='admin' OR owner_id=?) RETURNING product_json,version,updated_at`)
-      .bind(serialized, product.status, product.imageMediaId || null, product.videoMediaId || null, now, user.id, id, expected, user.role, user.id).first();
+      WHERE id=? AND version=? AND (owner_id=? OR EXISTS(SELECT 1 FROM users WHERE user_id=? AND role='admin')) AND ${managementGuard('products')} RETURNING product_json,version,updated_at`)
+      .bind(serialized, product.status, product.imageMediaId || null, product.videoMediaId || null, now, user.id, id, expected, user.id, user.id, user.id).first();
     if (!saved) fail(409, 'version_conflict', '商品已被其他操作修改，请刷新后重新编辑。');
   }
   return json({ product: productFromRow(saved), version: saved.version });
@@ -226,7 +250,7 @@ function hasSignature(bytes, type) {
 
 async function upload(request, env, url) {
   sameOrigin(request);
-  const user = await manager(request, env), db = requireDB(env), bucket = requireBucket(env), kind = url.searchParams.get('kind');
+  const user = await manager(request, env, false, 'products'), db = requireDB(env), bucket = requireBucket(env), kind = url.searchParams.get('kind');
   if (!['image', 'video'].includes(kind)) fail(400, 'kind_invalid', '素材类型必须为 image 或 video。');
   const type = contentType(request);
   if (!TYPES[kind].has(type)) fail(415, 'content_type', '不支持此素材格式。');
@@ -237,8 +261,9 @@ async function upload(request, env, url) {
   const id = `CLOUD-${crypto.randomUUID()}`, objectKey = `cloud-media/${id}`, now = isoNow();
   await bucket.put(objectKey, bytes, { httpMetadata: { contentType: type }, customMetadata: { mediaId: id } });
   try {
-    await db.prepare('INSERT INTO media(id,owner_id,object_key,name,mime_type,kind,size,source,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-      .bind(id, user.id, objectKey, name, type, kind, bytes.byteLength, source, now).run();
+    const saved = await db.prepare(`INSERT INTO media(id,owner_id,object_key,name,mime_type,kind,size,source,created_at) SELECT ?,?,?,?,?,?,?,?,? WHERE ${managementGuard('products')}`)
+      .bind(id, user.id, objectKey, name, type, kind, bytes.byteLength, source, now, user.id).run();
+    if (!saved.meta?.changes) fail(403, 'forbidden', '上传期间管理权限已变化，素材未保存。');
   } catch (error) {
     // A failed catalog write must never report success. Unreferenced uploads remain private.
     await bucket.delete(objectKey).catch(() => {});
@@ -270,10 +295,10 @@ async function readMedia(request, env, id) {
   const db = requireDB(env), bucket = requireBucket(env);
   const row = await db.prepare('SELECT * FROM media WHERE id=?').bind(id).first();
   if (!row) fail(404, 'not_found', '素材不存在。');
-  const published = await db.prepare("SELECT id FROM products WHERE status='published' AND (image_media_id=? OR video_media_id=?) LIMIT 1").bind(id, id).first();
+  const published = await db.prepare(`SELECT id FROM products WHERE status='published' AND (image_media_id=? OR video_media_id=?) AND ${visibleSellerSQL('products.owner_id')} LIMIT 1`).bind(id, id).first();
   if (!published) {
     const user = await identity(request, env);
-    if (!user || (user.id !== row.owner_id && user.role !== 'admin')) fail(404, 'not_found', '素材不存在或当前账户无权读取。');
+    if (!user || (user.role !== 'admin' && (user.id !== row.owner_id || !hasPermission(user, 'products')))) fail(404, 'not_found', '素材不存在或当前账户无权读取。');
   }
   const head = await bucket.head(row.object_key);
   if (!head) fail(404, 'not_found', '素材文件不存在。');
@@ -304,12 +329,14 @@ export async function handleApi(request, env) {
     if (path === `${PREFIX}/session`) {
       method(request, ['GET']);
       const user = await identity(request, env);
-      return json({ user: user ? { id: user.id, email: user.email, name: user.name } : null, role: user?.role || 'anonymous', canManage: ['admin', 'merchant'].includes(user?.role), signInUrl: SIGN_IN, signOutUrl: SIGN_OUT });
+      return json({ user: user ? { id: user.id, email: user.email, name: user.name } : null, role: user?.role || 'anonymous', canManage: !!user?.permissions.length, permissions: user?.permissions || [], merchant: user?.merchant || null, signInUrl: SIGN_IN, signOutUrl: SIGN_OUT });
     }
+    const merchantResponse = await handleMerchantApi(request, env, { manager, requireDB, sameOrigin, jsonBody, fail, json, method });
+    if (merchantResponse) return merchantResponse;
     const orderResponse = await handleOrderApi(request, env, { identity, manager, requireDB, sameOrigin, jsonBody, fail, json, method });
     if (orderResponse) return orderResponse;
     if (path === `${PREFIX}/products`) { method(request, ['GET']); return json(await catalog(requireDB(env))); }
-    if (path === `${PREFIX}/admin/products`) { method(request, ['GET']); return json(await catalog(requireDB(env), await manager(request, env))); }
+    if (path === `${PREFIX}/admin/products`) { method(request, ['GET']); return json(await catalog(requireDB(env), await manager(request, env, false, 'products'))); }
     if (path === `${PREFIX}/admin/seed`) { method(request, ['POST']); return await seed(request, env); }
     const productMatch = new RegExp(`^${PREFIX}/admin/products/([a-z0-9-]+)$`).exec(path);
     if (productMatch) { method(request, ['PUT']); return await putProduct(request, env, productMatch[1]); }

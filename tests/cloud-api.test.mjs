@@ -93,6 +93,8 @@ function fixture(t, options = {}) {
   const grant = async user => {
     await session(user);
     DB.sqlite.prepare("UPDATE users SET role='merchant' WHERE user_id=?").run(user.id);
+    DB.sqlite.prepare(`INSERT INTO merchant_accounts(id,email,user_id,name,region,status,permissions_json,version,created_at,updated_at,created_by,updated_by)
+      VALUES(?,?,?,?,?,'enabled',?,1,?,?,?,?)`).run(`MERCHANT-${crypto.randomUUID().toUpperCase()}`, user.email, user.id, user.id, '模拟产地', JSON.stringify(['products', 'orders', 'aftersales']), new Date().toISOString(), new Date().toISOString(), user.id, user.id);
   };
   const product = (id = 'own-product', overrides = {}) => JSON.parse(JSON.stringify({ ...normalizeCatalogProduct(BASE_CATALOG[0]), id, status: 'draft', ...overrides }));
   const save = (user, value, expectedVersion = 0, options = {}) => call(`/admin/products/${value.id}`, { method: 'PUT', user, body: { product: value, expectedVersion }, ...options });

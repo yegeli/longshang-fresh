@@ -77,3 +77,37 @@ export const orders = sqliteTable('orders', {
   check('orders_snapshot_json', sql`json_valid(${table.orderJson})`),
   check('orders_status', sql`json_extract(${table.orderJson}, '$.status') in ('created', 'cancelled')`)
 ]);
+
+export const merchantAccounts = sqliteTable('merchant_accounts', {
+  id: text('id').primaryKey(),
+  email: text('email').notNull().unique(),
+  userId: text('user_id').unique().references(() => users.id),
+  name: text('name').notNull(),
+  region: text('region').notNull(),
+  status: text('status', { enum: ['enabled', 'disabled'] }).notNull(),
+  permissionsJson: text('permissions_json').notNull(),
+  version: integer('version').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  createdBy: text('created_by').notNull().references(() => users.id),
+  updatedBy: text('updated_by').notNull().references(() => users.id)
+}, table => [
+  check('merchant_status', sql`${table.status} in ('enabled', 'disabled')`),
+  check('merchant_version', sql`${table.version} >= 1 and ${table.version} <= 9007199254740991`),
+  check('merchant_permissions_json', sql`json_valid(${table.permissionsJson}) and json_type(${table.permissionsJson}) = 'array'`)
+]);
+
+export const merchantAudit = sqliteTable('merchant_audit', {
+  id: text('id').primaryKey(),
+  merchantId: text('merchant_id').notNull().references(() => merchantAccounts.id),
+  actorId: text('actor_id').notNull().references(() => users.id),
+  action: text('action').notNull(),
+  beforeJson: text('before_json'),
+  afterJson: text('after_json').notNull(),
+  createdAt: text('created_at').notNull()
+}, table => [
+  index('merchant_audit_account_created').on(table.merchantId, table.createdAt),
+  check('merchant_audit_action', sql`${table.action} in ('created', 'updated', 'bound')`),
+  check('merchant_audit_before', sql`${table.beforeJson} is null or json_valid(${table.beforeJson})`),
+  check('merchant_audit_after', sql`json_valid(${table.afterJson})`)
+]);

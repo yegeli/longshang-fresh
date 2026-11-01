@@ -7,7 +7,7 @@ import * as model from '../public/model.js';
 // Run the actual event handlers without opening or controlling a browser.
 const source = (await readFile(new URL('../public/admin.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '').replace(/\nboot\(\);\s*$/, '\n')
-  + '\nglobalThis.subject = { state, boot, loadData, readOrders, writeOrders, openDrawer, renderDrawer, refreshRemote, reloadDrawer, saveCloudOrderForm, afterHistory };';
+  + '\nglobalThis.subject = { state, boot, loadData, readOrders, writeOrders, openDrawer, renderDrawer, refreshRemote, reloadDrawer, saveCloudOrderForm, afterHistory, changeView, merchantEditorFrom, merchantEditorPage, merchantsPage, merchantAuditPage, saveMerchantForm, reloadMerchantEditor, fillMerchantTemplate, openMerchantAudit, render, scopeValid };';
 const copy = value => JSON.parse(JSON.stringify(value));
 const original = () => ({ ...model.createOrder({ productId: 'jingtai-apple', variant: 'small', quantity: 1, address: 'gansu' }, 'DEMO-ADMIN-UI', '2026-11-01T03:00:00.000Z'), version: 1, updatedAt: '2026-11-01T03:00:00.000Z' });
 
@@ -18,7 +18,7 @@ function harness() {
     return nodes.get(id);
   };
   const cloud = { mode: 'cloud', session: { user: { id: 'admin-one', name: '测试运营' }, role: 'admin', canManage: true }, lastSyncedAt: '2026-11-01T03:00:00.000Z' };
-  const behavior = { orders: [original()], confirm: true, initialize: async () => {}, mutate: async () => { throw new Error('Specify mutation in the test'); }, single: async () => behavior.orders[0] };
+  const behavior = { orders: [original()], confirm: true, initialize: async () => {}, mutate: async () => { throw new Error('Specify mutation in the test'); }, single: async () => behavior.orders[0], merchants: [], saveMerchant: async input => ({...input,id:'MERCHANT-ONE',version:1,bound:false}), audit: [] };
   const context = vm.createContext({
     ...model,
     document: { querySelector: node, querySelectorAll: () => [], addEventListener: (name, callback) => { handlers[name] = callback; }, body: node('body'), activeElement: node('focus') },
@@ -27,6 +27,12 @@ function harness() {
     localStorage: { getItem() { writes.push('read'); throw new Error('Cloud UI read local storage'); }, setItem() { writes.push('write'); throw new Error('Cloud UI wrote local storage'); } },
     FormData: class { constructor(form) { this.values = form.values || {}; } get(key) { return this.values[key] ?? null; } has(key) { return Object.hasOwn(this.values, key); } },
     getCloudState: () => cloud, isCloudMode: () => cloud.mode === 'cloud',
+    hasPermission: name => cloud.mode === 'local' || cloud.session?.role === 'admin' || (cloud.session?.canManage === true && cloud.session?.merchant?.status !== 'disabled' && cloud.session?.permissions?.includes(name) === true),
+    managementScopeKey: () => JSON.stringify([cloud.mode,cloud.session?.user?.id,cloud.session?.role,cloud.session?.canManage,[...(cloud.session?.permissions || [])].sort(),cloud.session?.merchant?.id,cloud.session?.merchant?.status,cloud.session?.merchant?.version]),
+    loadMerchants: async () => { calls.push({method:'merchants'}); return {merchants:copy(behavior.merchants)}; },
+    loadMerchant: async id => { calls.push({method:'merchant',id}); return behavior.loadMerchant ? await behavior.loadMerchant(id) : copy(behavior.merchants.find(item => item.id === id)); },
+    saveMerchant: async (input,options) => { calls.push({method:'save-merchant',input:copy(input),options:copy(options)}); return await behavior.saveMerchant(input,options); },
+    loadMerchantAudit: async id => { calls.push({method:'audit',id}); return behavior.loadAudit ? await behavior.loadAudit(id) : copy(behavior.audit); },
     initializeCloudMode: async () => { await behavior.initialize(); return cloud; },
     readCatalog: () => model.CATALOG, refreshCatalog: async () => { if (behavior.catalog) await behavior.catalog(); }, hydrateMedia: async () => [],
     imageFor: item => item.image || 'assets/apples.jpg', videoFor: () => '', mediaErrorFor: () => '',
@@ -186,7 +192,7 @@ test('downgrading the same account from admin to merchant clears global records 
   h.nodes.get('#admin-app').innerHTML = '<div>DEMO-GLOBAL-ADMIN-ORDER 其他商家私有草稿</div>';
   h.openDrawer('order', 'DEMO-ADMIN-UI');
   let rejectCatalog;
-  h.behavior.initialize = async () => { h.cloud.session = { user: { id: 'admin-one' }, role: 'merchant', canManage: true }; };
+  h.behavior.initialize = async () => { h.cloud.session = { user: { id: 'admin-one' }, role: 'merchant', canManage: true, permissions:['products','orders','aftersales'] }; };
   h.behavior.catalog = () => new Promise((resolve, reject) => { rejectCatalog = reject; });
   const pending = h.refreshRemote({ manual: true });
   for (let i = 0; i < 8 && !rejectCatalog; i++) await Promise.resolve();
@@ -202,4 +208,134 @@ test('downgrading the same account from admin to merchant clears global records 
   assert.equal(h.nodes.get('#admin-nav').hidden, true);
   assert.match(h.nodes.get('#admin-app').innerHTML, /商家权限目录暂不可用/);
   assert.ok(!h.nodes.get('#admin-app').innerHTML.includes('其他商家私有草稿'));
+});
+
+const merchantRecord = (changes = {}) => ({ id: 'MERCHANT-ONE', name: '景泰采购员', region: '甘肃景泰', email: 'jingtai@example.test', permissions: ['products','orders','aftersales'], status: 'enabled', bound: false, version: 1, createdAt:'2026-11-01T03:00:00.000Z',updatedAt:'2026-11-01T03:00:00.000Z', ...changes });
+const merchantSession = (permissions, changes = {}) => ({ user: {id:'purchaser-one',name:'景泰采购员'},role:'merchant',canManage:permissions.length > 0,permissions,merchant:merchantRecord({bound:true}),...changes });
+const click = (h, dataset) => h.handlers.click({target:{closest:() => ({dataset,disabled:false})}});
+const merchantForm = values => ({id:'merchant-form',values:{name:'景泰采购员',email:'jingtai@example.test',region:'甘肃景泰',status:'enabled','permission-products':'on',...values}});
+
+test('merchant templates fill the real editor without saving; only the explicit form submit writes cloud data', async () => {
+  const h=harness(); await h.boot();
+  await click(h,{action:'new-merchant'}); await click(h,{action:'merchant-template',template:'dingbian'});
+  assert.equal(h.state.merchantEditor.values.name,'定边采购员');
+  assert.match(h.state.merchantEditor.values.email,/@example\.test$/);
+  assert.equal(h.calls.filter(call=>call.method==='save-merchant').length,0);
+  assert.match(h.nodes.get('#admin-app').innerHTML,/不创建 ChatGPT 账户/);
+  await h.handlers.submit({preventDefault(){},target:merchantForm({name:'定边采购员',email:'dingbian-buyer@example.test',region:'陕西定边','permission-aftersales':'on'})});
+  const call=h.calls.find(call=>call.method==='save-merchant');
+  assert.equal(call.input.name,'定边采购员'); assert.deepEqual(call.input.permissions,['products','aftersales']);
+  assert.equal(h.state.merchantEditor,null); assert.equal(h.state.merchants.length,1); assert.deepEqual(h.writes,[]);
+});
+
+test('editing a bound merchant preserves its immutable email and requires confirmation before disabling', async () => {
+  const h=harness(); h.behavior.merchants=[merchantRecord({bound:true})]; await h.boot();
+  await click(h,{action:'edit-merchant',id:'MERCHANT-ONE'});
+  assert.match(h.nodes.get('#admin-app').innerHTML,/readonly aria-readonly="true"/);
+  h.behavior.confirm=false;
+  await h.saveMerchantForm(merchantForm({email:'different@example.test',status:'disabled'}));
+  assert.equal(h.calls.filter(call=>call.method==='save-merchant').length,0);
+  assert.equal(h.state.merchantEditor.values.status,'disabled');
+  h.behavior.confirm=true; await h.saveMerchantForm(merchantForm({email:'different@example.test',status:'disabled'}));
+  const call=h.calls.find(call=>call.method==='save-merchant');
+  assert.equal(call.input.email,'jingtai@example.test'); assert.equal(call.input.status,'disabled'); assert.equal(call.options.expectedVersion,1);
+});
+
+test('merchant conflict preserves draft and blocks repeated save until explicit confirmed reload', async () => {
+  const h=harness(); h.behavior.merchants=[merchantRecord()]; await h.boot();
+  await click(h,{action:'edit-merchant',id:'MERCHANT-ONE'});
+  h.behavior.saveMerchant=async()=>{throw Object.assign(new Error('版本发生变化'),{status:409});};
+  await h.saveMerchantForm(merchantForm({name:'保留我的填写'}));
+  assert.equal(h.state.merchantEditor.values.name,'保留我的填写'); assert.equal(h.state.merchantEditor.conflict,true);
+  assert.match(h.nodes.get('#admin-app').innerHTML,/放弃当前填写并重新读取/);
+  await h.saveMerchantForm(merchantForm({name:'保留我的填写'})); assert.equal(h.calls.filter(call=>call.method==='save-merchant').length,1);
+  h.behavior.loadMerchant=async()=>merchantRecord({version:2,name:'另一设备的名字'});
+  h.behavior.confirm=false; await h.reloadMerchantEditor(); assert.equal(h.state.merchantEditor.values.name,'保留我的填写');
+  h.behavior.confirm=true; await h.reloadMerchantEditor(); assert.equal(h.state.merchantEditor.expectedVersion,2); assert.equal(h.state.merchantEditor.conflict,false); assert.equal(h.state.merchantEditor.values.name,'另一设备的名字');
+});
+
+test('merchant account list, filters and audit escape all user-provided text', async () => {
+  const h=harness(); h.behavior.merchants=[merchantRecord({name:'<img src=x>',region:'"><img src=x onerror=alert(1)>',email:'a&b@example.test'})];
+  h.behavior.audit=[{id:'EVENT-ONE',action:'updated',createdAt:'2026-11-01T03:00:00.000Z',actorName:'<script>bad</script>',before:merchantRecord(),after:merchantRecord({name:'<b>hello</b>'})}];
+  await h.boot(); h.changeView('merchants');
+  const html=h.nodes.get('#admin-app').innerHTML;
+  assert.ok(!html.includes('<img src=x>')); assert.match(html,/&lt;img src=x&gt;/); assert.match(html,/&quot;&gt;&lt;img src=x onerror=alert\(1\)&gt;/); assert.ok(!html.includes('<img src=x onerror='));
+  await h.handlers.submit({preventDefault(){},target:{id:'search-merchants',values:{query:'none'}}}); assert.match(h.nodes.get('#admin-app').innerHTML,/还没有符合条件的商家/);
+  h.state.merchantFilter.query=''; await click(h,{action:'audit-merchant',id:'MERCHANT-ONE'});
+  assert.match(h.nodes.get('#admin-app').innerHTML,/&lt;script&gt;bad&lt;\/script&gt;/); assert.match(h.nodes.get('#admin-app').innerHTML,/&lt;b&gt;hello&lt;\/b&gt;/); assert.ok(!h.nodes.get('#admin-app').innerHTML.includes('<script>'));
+});
+
+test('a products-only purchaser never loads private orders or merchants and cannot open unauthorized views', async () => {
+  const h=harness(); h.cloud.session=merchantSession(['products']); await h.boot();
+  assert.equal(h.calls.filter(call=>['list','merchants'].includes(call.method)).length,0); assert.equal(h.state.orders.length,0);
+  const html=h.nodes.get('#admin-app').innerHTML; assert.ok(!html.includes('DEMO-ADMIN-UI')); assert.ok(!html.includes('待处理售后')); assert.ok(!html.includes('最近的订单'));
+  h.changeView('orders'); assert.equal(h.state.view,'overview');
+  await click(h,{action:'new-merchant'}); assert.equal(h.state.merchantEditor,null);
+});
+
+test('an aftersales-only purchaser reads only its returned cases and has no order editing or catalog access', async () => {
+  const h=harness(); let catalogCalls=0; h.behavior.catalog=async()=>{catalogCalls++;};
+  const order={...model.createAfterSale(original(),{type:'refund',reason:'damaged',description:'模拟品质问题',hasEvidence:false},'AFTER-UI'),version:2};
+  h.behavior.orders=[order]; h.cloud.session=merchantSession(['aftersales']); await h.boot();
+  assert.equal(catalogCalls,0); assert.equal(h.state.products.length,0); assert.equal(h.calls.filter(call=>call.method==='list').length,1);
+  h.changeView('orders'); assert.equal(h.state.view,'overview'); h.openDrawer('order',order.id); assert.equal(h.state.drawer,null);
+  h.openDrawer('after',order.id); const html=h.nodes.get('#drawer-root').innerHTML;
+  assert.match(html,/id="resolve-form"/); assert.ok(!html.includes('id="ship-form"')); assert.ok(!html.includes('id="order-note-form"')); assert.ok(!html.includes('返回订单详情'));
+  await h.saveCloudOrderForm({id:'ship-form',values:{carrier:'物流',tracking:'DEMO-NO'}}); assert.equal(h.calls.filter(call=>call.method==='mutation').length,0);
+});
+
+test('an orders-only purchaser may ship and note but cannot open or resolve aftersale forms', async () => {
+  const h=harness(); h.cloud.session=merchantSession(['orders']); await h.boot();
+  h.openDrawer('order','DEMO-ADMIN-UI'); assert.match(h.nodes.get('#drawer-root').innerHTML,/id="order-note-form"/);
+  h.openDrawer('after','DEMO-ADMIN-UI'); assert.equal(h.state.drawer.type,'order');
+  await h.saveCloudOrderForm({id:'resolve-form',values:{reply:'不能提交'}}); assert.equal(h.calls.filter(call=>call.method==='mutation').length,0);
+  h.behavior.mutate=async()=>({...original(),version:2,merchantNote:'授权备注'});
+  await h.saveCloudOrderForm({id:'order-note-form',values:{note:'授权备注'}}); assert.equal(h.state.orders[0].merchantNote,'授权备注');
+});
+
+test('missing or empty merchant permissions and disabled merchant status fail closed', async () => {
+  for(const session of [merchantSession([]),merchantSession(['products'],{permissions:undefined}),merchantSession(['products'],{merchant:merchantRecord({status:'disabled'})})]) {
+    const h=harness(); h.cloud.session=session; await h.boot();
+    assert.equal(h.calls.length,0); assert.equal(h.state.products.length,0); assert.equal(h.state.orders.length,0); assert.equal(h.nodes.get('#admin-nav').hidden,true);
+  }
+});
+
+test('same merchant permission or version changes clear old DOM before awaiting the narrowed scope', async () => {
+  for (const change of ['permissions','version']) {
+    const h=harness(); h.cloud.session=merchantSession(['products','orders','aftersales']); await h.boot();
+    h.nodes.get('#admin-app').innerHTML='PRIVATE-OLD-SCOPE'; h.openDrawer('order','DEMO-ADMIN-UI');
+    let finishCatalog; h.behavior.catalog=()=>new Promise(resolve=>{finishCatalog=resolve;});
+    h.behavior.initialize=async()=>{ if(change==='permissions') h.cloud.session.permissions=['products']; else h.cloud.session.merchant.version=2; };
+    const pending=h.refreshRemote({manual:true}); for(let i=0;i<10&&!finishCatalog;i++) await Promise.resolve();
+    assert.ok(finishCatalog); assert.equal(h.state.orders.length,0); assert.equal(h.state.drawer,null); assert.ok(!h.nodes.get('#admin-app').innerHTML.includes('PRIVATE-OLD-SCOPE')); assert.equal(h.nodes.get('#admin-nav').hidden,true);
+    finishCatalog(); await pending;
+  }
+});
+
+test('late order and merchant save responses cannot restore data after management scope changes', async () => {
+  const h=harness(); await h.boot(); let finishRead;
+  h.behavior.list=()=>new Promise(resolve=>{finishRead=resolve;});
+  const pending=h.refreshRemote({manual:true}); for(let i=0;i<10&&!finishRead;i++) await Promise.resolve(); assert.ok(finishRead);
+  h.cloud.session=merchantSession(['products']); h.render();
+  finishRead({orders:[original()],lastSyncedAt:'2026-11-01T03:10:00.000Z'}); await pending;
+  assert.equal(h.state.orders.length,0); assert.equal(h.state.merchants.length,0); assert.ok(!h.nodes.get('#admin-app').innerHTML.includes('DEMO-ADMIN-UI'));
+  const a=harness(); await a.boot(); await click(a,{action:'new-merchant'}); let finishSave;
+  a.behavior.saveMerchant=()=>new Promise(resolve=>{finishSave=resolve;}); const saved=a.saveMerchantForm(merchantForm()); assert.ok(finishSave);
+  a.cloud.session=merchantSession(['products']); a.render(); finishSave(merchantRecord()); await saved;
+  assert.equal(a.state.merchants.length,0); assert.equal(a.state.merchantEditor,null); assert.ok(!a.nodes.get('#admin-app').innerHTML.includes('jingtai@example.test'));
+});
+
+test('local merchant page explains cloud login and cannot create or pretend to bind accounts', async () => {
+  const h=harness(),data=new Map(); h.cloud.mode='local'; h.cloud.session=null;
+  h.context.localStorage={getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)}; await h.boot();
+  h.changeView('merchants'); assert.match(h.nodes.get('#admin-app').innerHTML,/需要云端管理员登录/);
+  await click(h,{action:'new-merchant'}); assert.equal(h.state.merchantEditor,null); assert.equal(h.calls.length,0);
+});
+
+test('a duplicate email while creating a merchant remains editable and can be corrected without a reload', async () => {
+  const h=harness(); await h.boot(); await click(h,{action:'new-merchant'});
+  h.behavior.saveMerchant=async()=>{throw Object.assign(new Error('该登录邮箱已存在商家档案'),{status:409,code:'merchant_duplicate'});};
+  await h.saveMerchantForm(merchantForm()); assert.equal(h.state.merchantEditor.conflict,false); assert.match(h.state.merchantEditor.error,/邮箱已存在/);
+  h.behavior.saveMerchant=async input=>merchantRecord(input); await h.saveMerchantForm(merchantForm({email:'another@example.test'}));
+  assert.equal(h.state.merchantEditor,null); assert.equal(h.state.merchants[0].email,'another@example.test');
 });

@@ -1,4 +1,4 @@
-import { CloudError, apiRequest, getCloudState, requireManager } from './cloud-client.js';
+import { CloudError, apiRequest, getCloudState, requireManager, hasPermission, requirePermission, managementScopeKey, requireUnchangedScope } from './cloud-client.js';
 import { orderItems, ADDRESSES } from './model.js';
 
 // Cloud orders never use browser storage. The caller owns its display cache and
@@ -8,12 +8,16 @@ function account(manager = false) {
   if (state.mode !== 'cloud' || !state.session?.user?.id || state.error) {
     throw new CloudError('请先登录，再查看或操作云端订单。', 401, 'sign_in_required');
   }
-  if (manager) requireManager();
+  if (manager) {
+    requireManager();
+    if (!hasPermission('orders') && !hasPermission('aftersales')) throw new CloudError('当前账号没有订单或售后管理权限。', 403, 'permission_denied');
+  }
   return state.session.user.id;
 }
 
-function unchangedAccount(id, manager) {
+function unchangedAccount(id, manager, scope) {
   if (account(manager) !== id) throw new CloudError('登录账户已变化，请重新读取订单。', 409, 'account_changed');
+  if (manager) requireUnchangedScope(scope);
 }
 
 function invalidResponse() { throw new CloudError('云端订单响应异常，请重新读取；没有保存本机记录。', 0, 'invalid_order_response'); }
@@ -39,17 +43,19 @@ function orderId(id) {
 
 async function request(path, { manager = false, body, method = 'GET' } = {}) {
   const id = account(manager);
+  const scope = manager ? managementScopeKey() : null;
   const data = await apiRequest(path, { method, ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
-  unchangedAccount(id, manager);
+  unchangedAccount(id, manager, scope);
   return data;
 }
 
 export async function loadCloudOrders({ manager = false } = {}) {
   const id = account(manager), orders = new Map(), cursors = new Set();
+  const scope = manager ? managementScopeKey() : null;
   let cursor = null;
   for (let page = 0; page < 100; page++) {
     const data = await request(`${route(manager)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { manager });
-    unchangedAccount(id, manager);
+    unchangedAccount(id, manager, scope);
     if (!Array.isArray(data.orders) || (data.nextCursor != null && (typeof data.nextCursor !== 'string' || !data.nextCursor))) invalidResponse();
     for (const value of data.orders) {
       const order = checkedOrder(value), previous = orders.get(order.id);
@@ -88,6 +94,7 @@ export async function submitCloudOrder(input) {
 export async function mutateCloudOrder(id, action, payload, { manager = false } = {}) {
   const actions = manager ? ['ship', 'note', 'aftersale/resolve'] : ['cancel', 'aftersale', 'aftersale/withdraw'];
   if (!actions.includes(action)) throw new CloudError('此身份不能执行该订单操作。', 403, 'forbidden');
+  if (manager) requirePermission(action === 'aftersale/resolve' ? 'aftersales' : 'orders');
   if (!Number.isSafeInteger(payload?.expectedVersion) || payload.expectedVersion < 1) throw new CloudError('请先读取最新订单版本。', 409, 'version_conflict');
   const data = await request(`${route(manager)}/${orderId(id)}/${action}`, { manager, method: 'POST', body: payload });
   const order = checkedOrder(data.order);

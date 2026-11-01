@@ -1,5 +1,5 @@
 import { BASE_CATALOG, setCatalog, normalizeCatalogProduct } from './model.js';
-import { initializeCloudMode, isCloudMode, apiRequest, requireManager, markCloudSynced } from './cloud-client.js';
+import { initializeCloudMode, isCloudMode, apiRequest, requirePermission, managementScopeKey, requireUnchangedScope, markCloudSynced } from './cloud-client.js';
 
 let cloudCatalog = [];
 // Only retain products this tab actually read from the public API, never admin-only data.
@@ -47,8 +47,10 @@ export async function initializeCatalog(options = {}) {
 }
 export async function refreshCatalog({ admin = false } = {}) {
   if (!isCloudMode()) return readCatalog();
-  if (admin) requireManager();
+  if (admin) requirePermission('products');
+  const scope = admin ? managementScopeKey() : null;
   const data = await apiRequest(admin ? '/api/v1/admin/products' : '/api/v1/products');
+  if (admin) requireUnchangedScope(scope);
   if (!Array.isArray(data?.products) || data.products.some(product => !Number.isSafeInteger(product?.version) || product.version < 1)) throw new Error('云端商品目录或版本格式无效');
   const next = data.products.map(product => normalizeCatalogProduct(product));
   if (!admin && next.some(product => product.status !== 'published')) throw new Error('公开商品目录包含未发布记录');
@@ -65,13 +67,15 @@ export async function refreshCatalog({ admin = false } = {}) {
   return checked;
 }
 async function saveCloudProduct(input, options) {
-  requireManager();
+  requirePermission('products');
+  const scope = managementScopeKey();
   const previous = cloudCatalog.find(product => product.id === input.id);
   const product = normalizeCatalogProduct(input, previous || {});
   const expectedVersion = options.expectedVersion ?? getProductVersion(product.id);
   const data = await apiRequest(`/api/v1/admin/products/${encodeURIComponent(product.id)}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ product, expectedVersion })
   });
+  requireUnchangedScope(scope);
   const version = data?.version ?? data?.product?.version;
   if (!Number.isSafeInteger(version) || version < 1 || data?.product?.id !== product.id) throw new Error('云端保存响应或版本异常，请重新读取后核对');
   const saved = normalizeCatalogProduct(data.product);

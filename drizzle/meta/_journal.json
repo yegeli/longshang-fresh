@@ -15,6 +15,13 @@
       "when": 1793503715979,
       "tag": "0001_aspiring_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1793506262382,
+      "tag": "0002_demonic_mongu",
+      "breakpoints": true
     }
   ]
 }
