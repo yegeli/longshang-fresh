@@ -58,7 +58,9 @@ function fixture(t) {
   const publish = async (user = SELLER, id = 'jingtai-apple', overrides = {}) => {
     const product = { ...normalizeCatalogProduct(BASE_CATALOG.find(product => product.id === id) || BASE_CATALOG[0]), id, status: 'published', ...overrides };
     const response = await call('/admin/products/' + id, { method: 'PUT', user, body: { product, expectedVersion: overrides.version || 0 } });
-    assert.equal(response.status, 200, await response.clone().text()); return (await response.json()).product;
+    assert.equal(response.status, 200, await response.clone().text());
+    DB.sqlite.prepare(`INSERT OR IGNORE INTO product_inventory(product_id,small_stock,family_stock,batch_id,batch_code,harvest_date,note,version,updated_at,updated_by) VALUES(?,1000,1000,?,'TEST-BATCH','2026-10-31','模拟测试库存',1,?,?)`).run(id,`BATCH-${crypto.randomUUID().toUpperCase()}`,new Date().toISOString(),user.id);
+    return (await response.json()).product;
   };
   const quote = async (items = ITEMS, address = 'gansu', user = BUYER) => {
     const response = await call('/orders/quote', { method: 'POST', user, body: { items, address } });
@@ -67,7 +69,7 @@ function fixture(t) {
   const payload = async (overrides = {}) => {
     const items = overrides.items || ITEMS, address = overrides.address || 'gansu';
     const q = await quote(items, address, overrides.user || BUYER);
-    return { items, address, expectedTotal: q.total, productVersions: q.productVersions, idempotencyKey: crypto.randomUUID(), ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'user')) };
+    return { items, address, expectedTotal: q.total, productVersions: q.productVersions, inventoryVersions: q.inventoryVersions, idempotencyKey: crypto.randomUUID(), ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'user')) };
   };
   const create = (body, user = BUYER) => call('/orders', { method: 'POST', user, body });
   const mutation = (path, body, user = BUYER) => call(path, { method: 'POST', user, body });
@@ -221,9 +223,8 @@ test('cancelled orders remain readable and cannot be shipped or claim after-sale
 
 test('keyset pagination traverses every order once and validates cursor without crossing account filters', async t => {
   const f = fixture(t); await f.setup();
-  const input = await f.payload();
-  for (let i = 0; i < 103; i++) await data(await f.create({ ...input, idempotencyKey: 'pagination-' + i }), 201);
-  await data(await f.create({ ...input, idempotencyKey: 'another-buyer-key' }, OTHER_BUYER), 201);
+  for (let i = 0; i < 103; i++) await data(await f.create(await f.payload({ idempotencyKey: 'pagination-' + i })), 201);
+  await data(await f.create(await f.payload({ idempotencyKey: 'another-buyer-key', user: OTHER_BUYER }), OTHER_BUYER), 201);
   const first = await data(await f.call('/orders', { user: BUYER }));
   assert.equal(first.orders.length, 100); assert.ok(first.nextCursor);
   const second = await data(await f.call('/orders?cursor=' + first.nextCursor, { user: BUYER }));

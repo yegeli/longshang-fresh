@@ -1,8 +1,8 @@
-# 云端商家、商品、素材、订单与售后 API
+# 云端商家、商品、库存、素材、订单与售后 API
 
-V0.7 增加管理员管理商家档案与细分权限，沿用托管身份、商品、素材和云端模拟订单、发货、售后。云数据按登录身份和授权范围读取；购物车、收藏和客服仍为本机记录。不接支付或真实物流。
+V0.8增加每规格可售库存、当前采收批次、原子扣减、取消回补与库存记录；沿用托管身份、商家权限、商品、素材和云端模拟订单、发货、售后。云数据按登录身份和授权范围读取；购物车、收藏和客服仍为本机记录。不接支付或真实物流。
 
-API 入口为 `handleApi(request, env)`，使用 Web `Request` / `Response`，由托管路由调用。运行环境需绑定已迁移的 Cloudflare D1 `DB`、私有 R2 `BUCKET`，可配置 `BOOTSTRAP_ADMIN_EMAIL`。数据库结构见 `db/schema.ts`，迁移不包含商品或账户种子。
+API 入口为 `handleApi(request, env)`，使用 Web `Request` / `Response`，由托管路由调用。运行环境需绑定已迁移的 Cloudflare D1 `DB`、私有 R2 `BUCKET`，可配置 `BOOTSTRAP_ADMIN_EMAIL`。数据库结构见 `db/schema.ts`，迁移不包含商品、账户或正库存种子。
 
 ## 身份与信任边界
 
@@ -12,7 +12,7 @@ API 入口为 `handleApi(request, env)`，使用 Web `Request` / `Response`，�
 
 管理员通过商家管理接口按登录邮箱创建档案，采购者首次以可信身份登录时，服务器原子绑定匹配的未绑定档案和稳定用户 ID，并仅在首次绑定成功时授予 `merchant`。即使档案停用也绑定身份，但不授予业务操作权限，防止退回旧角色路径。绑定后的档案邮箱不可修改；可信身份后来更换邮箱，仍按稳定 ID 管理原归属。相同邮箱的另一个稳定 ID 不会获得已绑定权限，同一 ID 不能绑定第二份档案。已绑定用户被明确撤销角色后，再次登录不会自动恢复。
 
-`merchant` 角色本身不授予管理能力，必须同时有已绑定、启用的档案和对应权限。三个权限为 `products`（自己商品及素材）、`orders`（自己订单读取、模拟发货和内部备注）、`aftersales`（自己售后读取与处理）。`admin` 拥有全部三项并可管理所有归属；不能通过商家接口创建、升级、停用或纳管已知管理员。客户端提供角色、稳定 ID 或归属均被拒绝。档案不自动创建，也不发送邮件或邀请。
+`merchant` 角色本身不授予管理能力，必须同时有已绑定、启用的档案和对应权限。三个权限为 `products`（自己商品、素材、库存及当前批次）、`orders`（自己订单读取、模拟发货和内部备注）、`aftersales`（自己售后读取与处理）。`admin` 拥有全部三项并可管理所有归属；不能通过商家接口创建、升级、停用或纳管已知管理员。客户端提供角色、稳定 ID 或归属均被拒绝。档案不自动创建，也不发送邮件或邀请。
 
 ## 通用约定
 
@@ -92,6 +92,56 @@ API 入口为 `handleApi(request, env)`，使用 Web `Request` / `Response`，�
 
 `POST /api/v1/admin/seed`，JSON 正文 `{}`，只限管理员显式调用。幂等插入六款模拟商品；主键冲突不更新，不能覆盖既有资料。返回 `{ "inserted": 6, "products": [], "updatedAt": "…" }`，其中 `products` 为实际管理员目录，示例中的空数组仅代表响应形状。前端应在空目录时显示明确的初始化动作，不把本地演示记录自动导入云端。
 
+## 可售库存与当前采收批次（V0.8）
+
+库存独立于商品JSON和商品版本，每商品只有一个当前采收批次。单位为每种规格的整数“份”，保存当前还能出售的余量，不是农场总产量、重量或批次最初入库量。迁移、新建商品和初始化示例商品均不会自动产生正库存；缺少记录视为0，不能新下单。这里不是完整多批次仓库或真实库存盘点。
+
+| 请求 | 返回与权限 |
+| --- | --- |
+| `GET /api/v1/inventory` | `{inventories,updatedAt}`，仅已上架且卖家未停用的商品；未配库存的商品也返回0余量DTO，不需应用登录身份 |
+| `GET /api/v1/admin/inventory` | 同形状，需products权限；商家仅自己的商品，管理员全部，包含草稿、下架及未配置库存商品 |
+| `PUT /api/v1/admin/inventory/:productId` | products权限及商品归属；同源写入，按库存expectedVersion创建或替换，成功200 `{inventory}` |
+| `GET /api/v1/admin/inventory/:productId/history` | 同商品管理权限，返回 `{events}`，最新50条库存记录 |
+
+列表最多与200款目录对应，不分页。这里的公开可见性仍受站点整体访问策略限制；不开放跨站CORS。没有单库存GET、库存删除或批量灌入正库存接口。未知商品或无权管理他人商品返回404，未登录管理接口401，无products权限403。
+
+库存DTO示例：
+
+```json
+{
+  "productId": "jingtai-apple",
+  "configured": true,
+  "stocks": {"small": 20, "family": 12},
+  "batchId": "BATCH-服务端生成的大写UUID",
+  "batchCode": "DEMO-JINGTAI-20261101",
+  "harvestDate": "2026-11-01",
+  "note": "模拟采收批次介绍，待真实货源核实。",
+  "version": 1,
+  "updatedAt": "ISO时间"
+}
+```
+
+尚未配置返回 `configured:false`、`stocks:{small:0,family:0}`、`batchId/batchCode/harvestDate/note`均为空字符串、`version:0`、`updatedAt:null`。公开库存DTO不包含调整原因、操作人或历史。目录和库存分别读取，客户端不能将库存属性附在完整商品替换请求中保存。
+
+写入示例：
+
+```json
+{
+  "expectedVersion": 0,
+  "stocks": {"small": 20, "family": 12},
+  "batchCode": "DEMO-JINGTAI-20261101",
+  "harvestDate": "2026-11-01",
+  "note": "模拟采收批次介绍，待真实货源核实。",
+  "reason": "首次设置模拟可售余量"
+}
+```
+
+以上六个字段均须提供，拒绝未知字段。首次配置 `expectedVersion:0`；已有记录使用最近读取的库存版本，须为小于 `Number.MAX_SAFE_INTEGER` 的非负安全整数。`stocks`必须恰好包含small、family，每项为0–999999整数；`batchCode`去首尾空格后1–80字；`harvestDate`为空或有效的YYYY-MM-DD；`note`最多300字；`reason`去首尾空格后1–200字。字符串不接受控制字符。无效数量400 `stock_invalid`，无效批次字段400 `inventory_invalid`，版本格式错误400 `version_invalid`；陈旧版本、在途权限或归属变化409 `version_conflict`。
+
+首次配置、批次编号或采收日期变化生成新的 `batchId`；只改库存和介绍保留原批次标识。人工调整与库存记录在同一D1 batch事务内落盘，最终SQL再次检查当前products权限、启用状态、归属和版本。失败整体回滚，不返回保存成功。人工调整、订单扣减或回补均递增库存版本，商品版本不因此改变。取消回补可能使返回余量超过999999，读取不得截断；数据库仍限制为安全非负整数，人工写入上限保持不变。
+
+库存记录事件为 `{id,productId,action,reason,orderId,actorName,createdAt,before,after}`，其中 `action` 为 `adjusted`（人工设置）、`reserved`（模拟下单扣减）、`released`（取消回补）、`release_review`（取消需人工核对）。`orderId`人工调整时null，其他为关联订单编号；首次设置before为null，否则before／after为完整库存DTO。历史只允许该商品管理者读取，不向买家公开，不开放删除。
+
 ## 上传素材
 
 `POST /api/v1/media?kind=image` 或 `?kind=video`，需 `products` 权限，同源 `Origin`，正文为文件原始字节，非 multipart。文件接收期间权限被撤销时，元数据不落盘并尝试清理对象。
@@ -130,7 +180,7 @@ R2 对象键由服务端生成，数据库记录上传者、类型、大小、�
 
 响应使用数据库已验证的 MIME、`nosniff`、`private, no-store`。GET 支持单段 `bytes=start-end`、开放结尾和后缀 Range，成功 206 附 `Content-Range`；越界或无效单段返回 416 和 `Content-Range: bytes */总长`。多段或未知单位回退完整 200；不匹配的 `If-Range` 回退完整内容。HEAD 无正文，描述完整长度并忽略 Range，不绕过权限。R2 对象必须存在且长度与登记记录一致。
 
-## 云端模拟订单与售后（V0.6）
+## 云端模拟订单与售后（V0.6，V0.8加入库存）
 
 以下接口均需受信登录身份。买家接口只访问当前用户的订单（管理员身份调用买家接口也不能读取他人的订单）；管理读取需 `orders` 或 `aftersales` 权限，管理员可读全部，商家只读其 seller_id 订单。仅有 `aftersales` 时，列表和详情只读已有 `afterSale` 的订单，无售后订单统一404；无需额外 scope 参数。未知或他人的订单统一404，匿名401、无所需权限调用后台403。买家响应不包含内部 `merchantNote`，也不包含买卖双方的稳定内部ID。
 
@@ -142,7 +192,7 @@ R2 对象键由服务端生成，数据库记录上传者、类型、大小、�
 {"items":[{"productId":"jingtai-apple","variant":"small","quantity":1}],"address":"gansu"}
 ```
 
-返回 `{quote:{items,quantity,subtotal,shipping,total,address,productVersions}}`，其中items为服务端商品快照，address为地区ID，productVersions为商品ID到整数版本的映射。每单1–12种规格，每规格1–10份，不允许重复行。只支持 `gansu`、`shaanxi` 示例地区，模拟运费分别为600分、1000分；不收集真实地址。商品须已发布，跨商家组合返回422 `mixed_merchants`，请分开下单。
+返回 `{quote:{items,quantity,subtotal,shipping,total,address,productVersions,inventoryVersions}}`，其中items为服务端商品快照，另含每项 `batchId/batchCode/harvestDate/batchNote`。address为地区ID，productVersions与inventoryVersions分别为商品ID到当前商品版本和库存版本的映射。报价只读，不预留或扣减库存；随后创建订单仍可能因其他买家抢先下单而失败。每单1–12种规格，每规格1–10份，不允许重复行。只支持 `gansu`、`shaanxi` 示例地区，模拟运费分别为600分、1000分；不收集真实地址。商品须已发布且卖家未停用，所选规格须已配置足够可售余量；未配置或不足返回409 `stock_insufficient`，商品不存在／下架返回409 `product_unavailable`。跨商家组合返回422 `mixed_merchants`，请分开下单。
 
 `POST /api/v1/orders` 接收同样的items/address，并增加：
 
@@ -152,19 +202,24 @@ R2 对象键由服务端生成，数据库记录上传者、类型、大小、�
   "address":"gansu",
   "expectedTotal":5480,
   "productVersions":{"jingtai-apple":3},
+  "inventoryVersions":{"jingtai-apple":1},
   "idempotencyKey":"ORDER-客户端生成的唯一UUID"
 }
 ```
 
-金额和版本仅为请求示例，实际从quote响应取得。客户端不能指定订单ID、归属、状态或价格。服务端重新读取当前商品计算快照，并在单条 `INSERT SELECT` 中再次检查版本、归属、上架与卖家未停用状态；变化返回409 `quote_changed`。前端金额变化后须重新确认，不能静默按新价提交。
+金额和版本仅为请求示例，实际从quote响应取得。新单必须带有与所选商品ID一一对应的productVersions和inventoryVersions，不能漏项或多项；库存版本为1至小于安全整数上限的整数。缺失或无效库存版本400 `quote_invalid`。客户端不能指定订单ID、归属、状态、批次或价格。
 
-创建成功201 `{order,replayed:false}`。同买家+同幂等键+同规范化参数重试返回200 `{order,replayed:true}`，即使商品随后已下架，也返回原订单；同键不同参数409 `idempotency_conflict`。失败响应或响应丢失时保留原请求重试，不自动更换key。
+服务端重新读取当前商品与库存计算快照。当前库存不足可返回409 `stock_insufficient`；商品、库存版本或报价金额变化返回409 `quote_changed`，需要重新获取报价和确认，不静默按新价或新批次提交。建单在D1 batch中先用 `INSERT SELECT` 再次核对全部商品版本、归属、上架、卖家状态、库存版本及每规格余量，再仅对本次新订单编号扣减并记录库存事件，任一失败整单回滚。这个最终条件同时防止报价后停用、换批次或其他下单造成卖超。
 
-订单保留下单时名称、图片引用、规格、单价、数量、运费、合计、示例地区和时间；编号为 `DEMO-大写UUID`，另带 `version`、`updatedAt`。主状态 `created/cancelled`，发货位于 `fulfillment`，当前售后位于 `afterSale`。`afterSaleHistory` 追加每次申请、撤回和处理后的完整售后快照（同一售后ID可有多个状态），不覆盖历史。没有支付状态、库存扣减、真实运单或实际退款。
+创建成功201 `{order,replayed:false}`。同买家+同幂等键+同规范化参数重试返回200 `{order,replayed:true}`，即使商品随后下架、卖家停用或库存不足，也返回原订单，不重复扣减。参数指纹包含库存版本；同键不同参数409 `idempotency_conflict`。失败响应或响应丢失时保留原请求重试，不自动更换key。
+
+兼容升级前的旧幂等重放：没有inventoryVersions的请求，只能在当前买家已存在同key且旧规范化请求指纹完全一致时返回原单；不要求先通过当前库存检查，也不追加库存扣减。若同key已有新格式请求或其他参数不同，则409；没有历史匹配订单则400 `quote_invalid`，不能借兼容路径创建绕过库存的新单。不要给旧重试请求擅自补新库存版本或换key。
+
+订单保留下单时名称、图片引用、规格、单价、数量、运费、合计、示例地区、时间及每项批次编号、稳定批次ID、采收日期和介绍；编号为 `DEMO-大写UUID`，另带 `version`、`updatedAt`。主状态 `created/cancelled`，发货位于 `fulfillment`，当前售后位于 `afterSale`。`afterSaleHistory` 追加每次申请、撤回和处理后的完整售后快照（同一售后ID可有多个状态），不覆盖历史。库存扣减只用于模拟订单，没有支付状态、真实运单或实际退款。
 
 | POST 路径 | 正文字段（均必带expectedVersion） | 权限及行为 |
 | --- | --- | --- |
-| `/api/v1/orders/:id/cancel` | `expectedVersion` | 本人取消未发货、无待售后、未完成整单退款的订单 |
+| `/api/v1/orders/:id/cancel` | `expectedVersion` | 本人取消未发货、无待售后、未完成整单退款的订单；库存规则见下文 |
 | `/api/v1/orders/:id/aftersale` | `expectedVersion,type,reason,description,hasEvidence` | 本人申请；type为refund/replacement；reason为damaged/spec/delivery/other；description最多300字；hasEvidence为模拟凭证布尔值，不上传真实凭证 |
 | `/api/v1/orders/:id/aftersale/withdraw` | `expectedVersion` | 本人撤回待处理售后 |
 | `/api/v1/admin/orders/:id/ship` | `expectedVersion,carrier,tracking` | `orders`权限，模拟发货；carrier最多40字，tracking必须为DEMO-开头演示单号 |
@@ -173,6 +228,17 @@ R2 对象键由服务端生成，数据库记录上传者、类型、大小、�
 
 成功均返回 `{order}` 并递增版本；SQL按 `id+expectedVersion+归属` 条件原子更新，管理写入同时再次检查当前角色、启用状态和动作权限。陈旧版本409 `version_conflict`，不允许静默覆盖；非法状态409 `order_state_invalid`。已取消、重复发货、待处理售后或整单模拟退款完成的订单均不能发货；退款完成后不能再次申请或取消。售后历史达到100条后不再接受新申请，但仍可处理已有待办。没有云端清空/删除/自动样例订单接口。
 
+### 取消时的整单回补
+
+新订单若含完整库存批次快照，成功取消返回的order会增加 `stockRelease:{status,message}`：
+
+- `status:"released"`：全单所有商品仍匹配下单批次，且余量与版本可在安全整数范围内增加；一次性整单回补原规格份数，并写released记录。
+- `status:"review"`：任一商品已换批次或安全范围需要核对。取消仍成功，但整单不自动回补任何商品，记录release_review并提示采购者核对。不是只跳过换批次商品再回补其余商品。
+
+订单版本更新、唯一回补标记、库存增量和记录位于同一事务，失败整体回滚。并发的相同expectedVersion取消只有一次成功，失败者不能凭“订单已经是下一版”重复回补。内部回补标记不出现在API响应；使用者只读取stockRelease提示，不把message当作实际物流或退款凭证。
+
+没有库存批次快照的历史订单取消仍保留原行为，不新增库存、不生成伪造回补。售后申请、撤回、退款处理及补发处理均不自动回库。待核对的实物数量由有products权限的采购者或管理员核实，再通过库存PUT人工调整并填写原因；本轮没有自动恢复历史批次、部分回补或完整仓储流程。
+
 ## 验证范围
 
 `tests/cloud-api.test.mjs` 将真实 `drizzle/*.sql` 迁移应用到 Node SQLite，再以薄 D1 适配层调用同一个 handler；R2 用内存对象存储适配，测试字节为自有临时数据。覆盖管理员首次引导、角色撤销、并发版本、数据库约束、跨账户拒绝、上传签名/大小/流取消、失败清理及素材可见性与 Range。
@@ -180,3 +246,6 @@ R2 对象键由服务端生成，数据库记录上传者、类型、大小、�
 这些自动化测试不替代 Sites dispatch、真实 D1/R2、托管登录或手机实际文件上传/播放验收。云端商品和素材的跨设备联动应在部署后单独验证；V0.6 订单使用 D1 独立持久化，真实手机交互仍需单独验收。
 
 V0.7 的 `tests/merchant-api.test.mjs` 使用同一批真实 SQLite 迁移，覆盖商家增改与管理员保护、稳定身份绑定竞争、角色撤销、权限组合、跨采购者隔离、停用与旧单保留、报价后停用、最终写权限检查及审计故障事务回滚。`scripts/smoke-merchants-local.mjs` 可检查实际本机 Worker；只接受 HTTP 回环地址，使用模拟身份和模拟资料，不能用于托管身份或真实手机验收。
+
+
+V0.8 `tests/inventory-api.test.mjs`使用真实迁移与SQLite适配器核对库存字段、归属及products权限、当前批次生成、版本冲突、人工记录事务、原子下单／幂等扣减、同批次取消回补及换批次整单review。控制器与store测试另覆盖未配置0、模拟仅填表、库存变动后的表单冲突和权限收缩旧响应隔离。以上是源码与自动化范围，不代表生产登录后的完整操作或真实手机验收，实际结果以本轮QA记录为准。

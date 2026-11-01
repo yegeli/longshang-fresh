@@ -8,14 +8,14 @@ import { esc, icon } from '../public/ui.js';
 // exercise its asynchronous click/submit paths without controlling a browser.
 const source=(await readFile(new URL('../public/app.js',import.meta.url),'utf8')).replace(/^import .*;\n/gm,'');
 const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
-const run=new AsyncFunction('deps',`with(deps){${source}\nreturn {createBuyerCloudOrder,refreshBuyerOrders,render,cloudOrderGate,cloudOrderNotice,getPendingCloudOrder,miniProduct,afterSale,afterSaleProgress,getOrders:()=>orders,getDraft:()=>afterDraft,setDraft:value=>{afterDraft=value;},setOrders:value=>{orders=value;ordersReady=true;},getElement:()=>app};}`);
+const run=new AsyncFunction('deps',`with(deps){${source}\nreturn {createBuyerCloudOrder,refreshBuyerOrders,render,cloudOrderGate,cloudOrderNotice,getPendingCloudOrder,miniProduct,afterSale,afterSaleProgress,getOrders:()=>orders,inventoryPanel,checkout,getDraft:()=>afterDraft,setDraft:value=>{afterDraft=value;},setOrders:value=>{orders=value;ordersReady=true;},getElement:()=>app};}`);
 const copy=value=>JSON.parse(JSON.stringify(value));
 function element(){return {innerHTML:'',dataset:{},scrollTop:0,hidden:false,children:{length:0},classList:{add(){},remove(){},toggle(){}},querySelectorAll:()=>[],querySelector:()=>null,focus(){}};}
 function makeOrder(id='DEMO-CLOUD-ONE',version=1){
   model.setCatalog(model.BASE_CATALOG);
   return {...model.createOrder({productId:'jingtai-apple',variant:'small',quantity:1,address:'gansu'},id),version,updatedAt:new Date().toISOString()};
 }
-async function harness({user={id:'buyer-one',name:'模拟买家'},orders=[],quotedTotal=5590,submit,mutate,storageFails=false}={}){
+async function harness({user={id:'buyer-one',name:'模拟买家'},orders=[],quotedTotal=5590,submit,mutate,storageFails=false,stock=20,batch=null,quotedBatchId}={}){
   const elements=new Map(['#app','#tabbar','#modal-root','#catalog-sync','#toast','.workspace'].map(key=>[key,element()]));
   const events={},windowEvents={},sessionValues=new Map(),requests=[],localOrderReads=[];
   let currentUser=user,currentOrders=copy(orders),submitCount=0,quoteCount=0,orderReader;
@@ -24,9 +24,9 @@ async function harness({user={id:'buyer-one',name:'模拟买家'},orders=[],quot
   const location={hash:'#/home',origin:'https://example.test'};
   const cloud=()=>({mode:'cloud',session:{user:currentUser,canManage:false},lastSyncedAt:'',error:''});
   const deps={...model,esc,icon,document,location,window:{addEventListener:(name,fn)=>{windowEvents[name]=fn;}},sessionStorage,localStorage:{getItem:key=>{if(key===model.STORAGE_KEY)localOrderReads.push(key);return null;},setItem(){throw new Error('Cloud orders must not write localStorage');}},setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,crypto:globalThis.crypto,
-    initializeCatalog:async()=>model.BASE_CATALOG,readCatalog:()=>model.BASE_CATALOG,refreshCatalog:async()=>model.BASE_CATALOG,CATALOG_KEY:'catalog',hydrateMedia:async()=>[],imageFor:p=>p?.image||'assets/apples.jpg',videoFor:()=>'',mediaErrorFor:()=>'',isCloudMode:()=>true,getCloudState:cloud,initializeCloudMode:async()=>cloud(),
+    refreshBuyerInventory:async()=>{},inventoryFor:()=>batch,availability:()=>({available:stock>0,stock,message:stock?'可售20份':'该规格暂时缺货'}),inventoryFingerprint:()=>'',initializeCatalog:async()=>model.BASE_CATALOG,readCatalog:()=>model.BASE_CATALOG,refreshCatalog:async()=>model.BASE_CATALOG,CATALOG_KEY:'catalog',hydrateMedia:async()=>[],imageFor:p=>p?.image||'assets/apples.jpg',videoFor:()=>'',mediaErrorFor:()=>'',isCloudMode:()=>true,getCloudState:cloud,initializeCloudMode:async()=>cloud(),
     loadCloudOrders:async()=>orderReader?orderReader():({orders:copy(currentOrders),lastSyncedAt:new Date().toISOString()}),loadCloudOrder:async id=>{const order=currentOrders.find(value=>value.id===id);if(!order)throw Object.assign(new Error('not found'),{status:404});return copy(order);},
-    quoteCloudOrder:async(items,address)=>{quoteCount++;return {total:quotedTotal,items,address,productVersions:{'jingtai-apple':1}};},createOrderRequestKey:()=>`ORDER-test-${++submitCount}`,
+    quoteCloudOrder:async(items,address)=>{quoteCount++;return {total:quotedTotal,items:items.map(item=>({...item,...(quotedBatchId?{batchId:quotedBatchId}: {})})),address,productVersions:{'jingtai-apple':1},inventoryVersions:{'jingtai-apple':4}};},createOrderRequestKey:()=>`ORDER-test-${++submitCount}`,
     submitCloudOrder:async request=>{requests.push(copy(request));return submit?submit(request,requests.length):makeOrder();},mutateCloudOrder:async(...args)=>{requests.push(args);return mutate?mutate(...args):makeOrder(args[0],2);},
     createExperience:()=>({decorateHome:html=>html,beforeRender(){},routes:{mine:()=>'<p>我的</p>'},handleClick:()=>false,handleSubmit:()=>false,handleChange:()=>false,storage(){},refresh(){},count:()=>0,removeOrderedItems(){}}),
     FormData:class{constructor(form){this.values=form.fields||{};}get(key){return this.values[key]??null;}}
@@ -135,7 +135,7 @@ function cartHarness(cloudMode=true){
   const storage={getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value)};
   const factory=loadExperience({...model,esc,icon,localStorage:storage,isCloudMode:()=>cloudMode,getCloudState:()=>({session:{user:{id:'buyer-one'}}}),imageFor:p=>p?.image,SPECIALTY_GUIDES:[],COLLECTIONS:[]});
   let fail=true,localOrders=0,path='cart-checkout';
-  const api={selection:{address:'gansu'},route:()=>[path],nav:value=>{path=value;},toast:value=>notices.push(value),render(){},updateTabs(){},title:()=>'',miniProduct:()=>'',newId:()=> 'DEMO-LOCAL-CART',addOrder:()=>{localOrders++;},createCloudOrder:async(...args)=>{calls.push(args);if(fail)throw new Error('temporary network failure');return makeOrder();}};
+  const api={availability:()=>({available:true,stock:20,message:'可售20份'}),inventoryFor:()=>null,selection:{address:'gansu'},route:()=>[path],nav:value=>{path=value;},toast:value=>notices.push(value),render(){},updateTabs(){},title:()=>'',miniProduct:()=>'',newId:()=> 'DEMO-LOCAL-CART',addOrder:()=>{localOrders++;},createCloudOrder:async(...args)=>{calls.push(args);if(fail)throw new Error('temporary network failure');return makeOrder();}};
   const experience=factory(api);experience.routes['cart-checkout']();
   return {experience,values,initial,calls,notices,setFailure:value=>{fail=value;},localCount:()=>localOrders,getPath:()=>path};
 }
@@ -188,4 +188,27 @@ test('a delayed read preserves a newer after-sale acknowledgement and its frozen
   assert.equal(ui.getOrders()[0].version,2);
   assert.equal(ui.getOrders()[0].afterSale.status,'submitted');
   assert.equal(ui.getDraft().expectedVersion,1,'A read begun before a write must not rebase the pending draft');
+});
+
+test('cloud checkout sends the confirmed inventory version and keeps it for uncertain retries',async()=>{
+  const ui=await harness({submit:()=>{throw Object.assign(new Error('uncertain'),{status:503});}});
+  await assert.rejects(ui.createBuyerCloudOrder([{productId:'jingtai-apple',variant:'small',quantity:1}],'gansu',5590));
+  assert.deepEqual(ui.requests[0].inventoryVersions,{'jingtai-apple':4});
+  assert.deepEqual(ui.getPendingCloudOrder().request.inventoryVersions,{'jingtai-apple':4});
+});
+
+test('a changed harvest batch requires a fresh buyer confirmation without writing an order',async()=>{
+  const ui=await harness({quotedBatchId:'BATCH-NEW'});
+  await assert.rejects(ui.createBuyerCloudOrder([{productId:'jingtai-apple',variant:'small',quantity:1}],'gansu',5590,undefined,{'jingtai-apple':'BATCH-OLD'}),/批次已更新/);
+  assert.equal(ui.requests.length,0);assert.equal(ui.getPendingCloudOrder(),null);
+});
+
+test('zero stock disables checkout and batch descriptions are escaped in product and order UI',async()=>{
+  const batch={configured:true,batchId:'BATCH-ONE',batchCode:'<img src=x onerror=alert(1)>',harvestDate:'2026-11-01',note:'<script>alert(1)</script>'};
+  const ui=await harness({stock:0,batch});model.setCatalog(model.BASE_CATALOG);
+  assert.match(ui.checkout(),/data-action="submit" disabled/);
+  const panel=ui.inventoryPanel(model.BASE_CATALOG[0],'small',1);
+  assert.match(panel,/该规格暂时缺货/);assert.match(panel,/&lt;script&gt;/);assert.ok(!panel.includes('<script>'));
+  const item={...model.orderItems(makeOrder())[0],batchId:batch.batchId,batchCode:batch.batchCode,harvestDate:batch.harvestDate,batchNote:batch.note};
+  assert.match(ui.miniProduct(item),/&lt;img/);
 });

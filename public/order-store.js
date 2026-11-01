@@ -80,7 +80,9 @@ export async function quoteCloudOrder(items, address) {
   const data = await request('/api/v1/orders/quote', { method: 'POST', body: { items, address } });
   const quote = data.quote;
   if (!quote || !Array.isArray(quote.items) || !quote.items.length || quote.address !== address
-    || !Number.isSafeInteger(quote.total) || quote.total < 0 || !quote.productVersions || typeof quote.productVersions !== 'object') invalidResponse();
+    || !Number.isSafeInteger(quote.total) || quote.total < 0 || !quote.productVersions || typeof quote.productVersions !== 'object'
+    || !quote.inventoryVersions || typeof quote.inventoryVersions !== 'object' || Array.isArray(quote.inventoryVersions)
+    || quote.items.some(item => !Number.isSafeInteger(quote.inventoryVersions[item.productId]) || quote.inventoryVersions[item.productId] < 1)) invalidResponse();
   return quote;
 }
 

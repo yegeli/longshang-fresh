@@ -67,11 +67,15 @@ function fixture(t) {
   const edit = async (profile, overrides = {}) => (await data(await call('/admin/merchants/' + profile.id, { method: 'PUT', body: { ...input({ email: profile.email }, profile), ...overrides, id: undefined, bound: undefined, version: undefined, createdAt: undefined, updatedAt: undefined, expectedVersion: profile.version } }))).merchant;
   const bind = async (user = SELLER, overrides = {}) => { const profile = await add(user, overrides); await session(user); return get(profile.id); };
   const product = (id = 'demo-apples', overrides = {}) => ({ ...normalizeCatalogProduct(BASE_CATALOG[0]), id, status: 'published', ...overrides });
-  const save = (user = SELLER, value = product(), expectedVersion = 0) => call('/admin/products/' + value.id, { method: 'PUT', user, body: { product: value, expectedVersion } });
+  const save = async (user = SELLER, value = product(), expectedVersion = 0) => {
+    const response = await call('/admin/products/' + value.id, { method: 'PUT', user, body: { product: value, expectedVersion } });
+    if (response.status === 200) DB.sqlite.prepare(`INSERT OR IGNORE INTO product_inventory(product_id,small_stock,family_stock,batch_id,batch_code,harvest_date,note,version,updated_at,updated_by) VALUES(?,100,100,?,'TEST-BATCH','2026-10-31','模拟测试库存',1,?,?)`).run(value.id,`BATCH-${crypto.randomUUID().toUpperCase()}`,new Date().toISOString(),user.id);
+    return response;
+  };
   const upload = (user = SELLER) => call('/media?kind=image', { method: 'POST', user, body: PNG, headers: { 'Content-Type': 'image/png', 'X-File-Name': 'test.png', 'X-Media-Source': 'Own%20test%20image' } });
   const selection = { items: [{ productId: 'demo-apples', variant: 'small', quantity: 1 }], address: 'gansu' };
   const quote = async () => (await data(await call('/orders/quote', { method: 'POST', user: BUYER, body: selection }))).quote;
-  const payload = async () => { const q = await quote(); return { ...selection, expectedTotal: q.total, productVersions: q.productVersions, idempotencyKey: crypto.randomUUID() }; };
+  const payload = async () => { const q = await quote(); return { ...selection, expectedTotal: q.total, productVersions: q.productVersions, inventoryVersions: q.inventoryVersions, idempotencyKey: crypto.randomUUID() }; };
   const create = body => call('/orders', { method: 'POST', user: BUYER, body });
   const action = (order, name, body = {}, user = SELLER) => call(`/admin/orders/${order.id}/${name}`, { method: 'POST', user, body: { expectedVersion: order.version, ...body } });
   return { DB, BUCKET, call, session, input, add, get, edit, bind, product, save, upload, selection, quote, payload, create, action };

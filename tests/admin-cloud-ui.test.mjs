@@ -7,7 +7,7 @@ import * as model from '../public/model.js';
 // Run the actual event handlers without opening or controlling a browser.
 const source = (await readFile(new URL('../public/admin.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\n/gm, '').replace(/\nboot\(\);\s*$/, '\n')
-  + '\nglobalThis.subject = { state, boot, loadData, readOrders, writeOrders, openDrawer, renderDrawer, refreshRemote, reloadDrawer, saveCloudOrderForm, afterHistory, changeView, merchantEditorFrom, merchantEditorPage, merchantsPage, merchantAuditPage, saveMerchantForm, reloadMerchantEditor, fillMerchantTemplate, openMerchantAudit, render, scopeValid };';
+  + '\nglobalThis.subject = { state, boot, loadData, readOrders, writeOrders, openDrawer, renderDrawer, refreshRemote, reloadDrawer, saveCloudOrderForm, afterHistory, changeView, merchantEditorFrom, merchantEditorPage, merchantsPage, merchantAuditPage, saveMerchantForm, reloadMerchantEditor, fillMerchantTemplate, openMerchantAudit, render, scopeValid, inventoryPage, inventoryEditorPage, openInventoryEditor, fillInventoryTemplate, saveInventoryForm, reloadInventoryEditor, openInventoryHistory, inventoryHistoryPage, stockReleaseNotice };';
 const copy = value => JSON.parse(JSON.stringify(value));
 const original = () => ({ ...model.createOrder({ productId: 'jingtai-apple', variant: 'small', quantity: 1, address: 'gansu' }, 'DEMO-ADMIN-UI', '2026-11-01T03:00:00.000Z'), version: 1, updatedAt: '2026-11-01T03:00:00.000Z' });
 
@@ -18,7 +18,7 @@ function harness() {
     return nodes.get(id);
   };
   const cloud = { mode: 'cloud', session: { user: { id: 'admin-one', name: '测试运营' }, role: 'admin', canManage: true }, lastSyncedAt: '2026-11-01T03:00:00.000Z' };
-  const behavior = { orders: [original()], confirm: true, initialize: async () => {}, mutate: async () => { throw new Error('Specify mutation in the test'); }, single: async () => behavior.orders[0], merchants: [], saveMerchant: async input => ({...input,id:'MERCHANT-ONE',version:1,bound:false}), audit: [] };
+  const behavior = { orders: [original()], confirm: true, initialize: async () => {}, mutate: async () => { throw new Error('Specify mutation in the test'); }, single: async () => behavior.orders[0], inventories: [], inventoryHistory: [], saveInventory: async (productId,input)=>({...input,productId,configured:true,batchId:'BATCH-ONE',version:1,updatedAt:'2026-11-01T03:00:00.000Z'}), merchants: [], saveMerchant: async input => ({...input,id:'MERCHANT-ONE',version:1,bound:false}), audit: [] };
   const context = vm.createContext({
     ...model,
     document: { querySelector: node, querySelectorAll: () => [], addEventListener: (name, callback) => { handlers[name] = callback; }, body: node('body'), activeElement: node('focus') },
@@ -29,6 +29,9 @@ function harness() {
     getCloudState: () => cloud, isCloudMode: () => cloud.mode === 'cloud',
     hasPermission: name => cloud.mode === 'local' || cloud.session?.role === 'admin' || (cloud.session?.canManage === true && cloud.session?.merchant?.status !== 'disabled' && cloud.session?.permissions?.includes(name) === true),
     managementScopeKey: () => JSON.stringify([cloud.mode,cloud.session?.user?.id,cloud.session?.role,cloud.session?.canManage,[...(cloud.session?.permissions || [])].sort(),cloud.session?.merchant?.id,cloud.session?.merchant?.status,cloud.session?.merchant?.version]),
+    loadInventories: async options => { calls.push({method:'inventory',options}); return behavior.loadInventories ? await behavior.loadInventories(options) : {inventories:copy(behavior.inventories)}; },
+    saveInventory: async (productId,input,options) => { calls.push({method:'save-inventory',productId,input:copy(input),options:copy(options)}); return await behavior.saveInventory(productId,input,options); },
+    loadInventoryHistory: async productId => { calls.push({method:'inventory-history',productId}); return behavior.loadInventoryHistory ? await behavior.loadInventoryHistory(productId) : copy(behavior.inventoryHistory); },
     loadMerchants: async () => { calls.push({method:'merchants'}); return {merchants:copy(behavior.merchants)}; },
     loadMerchant: async id => { calls.push({method:'merchant',id}); return behavior.loadMerchant ? await behavior.loadMerchant(id) : copy(behavior.merchants.find(item => item.id === id)); },
     saveMerchant: async (input,options) => { calls.push({method:'save-merchant',input:copy(input),options:copy(options)}); return await behavior.saveMerchant(input,options); },
@@ -338,4 +341,85 @@ test('a duplicate email while creating a merchant remains editable and can be co
   await h.saveMerchantForm(merchantForm()); assert.equal(h.state.merchantEditor.conflict,false); assert.match(h.state.merchantEditor.error,/邮箱已存在/);
   h.behavior.saveMerchant=async input=>merchantRecord(input); await h.saveMerchantForm(merchantForm({email:'another@example.test'}));
   assert.equal(h.state.merchantEditor,null); assert.equal(h.state.merchants[0].email,'another@example.test');
+});
+
+const inventoryRecord=(changes={})=>({productId:'jingtai-apple',configured:true,stocks:{small:20,family:12},batchId:'BATCH-ONE',batchCode:'DEMO-APPLE-ONE',harvestDate:'2026-11-01',note:'模拟采收说明',version:1,updatedAt:'2026-11-01T03:00:00.000Z',...changes});
+const inventoryForm=values=>({id:'inventory-form',values:{small:'20',family:'12',batchCode:'DEMO-APPLE-ONE',harvestDate:'2026-11-01',note:'模拟批次',reason:'核实后调整模拟库存',...values}});
+
+test('inventory view shows unconfigured counts and template only fills until explicit versioned save',async()=>{
+  const h=harness();await h.boot();h.changeView('inventory');
+  assert.match(h.nodes.get('#admin-app').innerHTML,/未设置库存/);assert.match(h.nodes.get('#admin-app').innerHTML,/设置库存/);
+  await click(h,{action:'edit-inventory',id:'jingtai-apple'});assert.equal(h.state.inventoryEditor.expectedVersion,0);assert.equal(h.state.inventoryEditor.values.small,'0');
+  await click(h,{action:'inventory-template'});assert.equal(h.state.inventoryEditor.values.small,'20');assert.equal(h.state.inventoryEditor.values.family,'12');assert.match(h.state.inventoryEditor.values.batchCode,/^DEMO-/);
+  assert.equal(h.calls.filter(call=>call.method==='save-inventory').length,0);
+  await h.handlers.submit({preventDefault(){},target:inventoryForm()});
+  const call=h.calls.find(call=>call.method==='save-inventory');assert.equal(call.options.expectedVersion,0);assert.equal(call.productId,'jingtai-apple');assert.equal(call.input.stocks.small,20);assert.equal(h.state.inventoryEditor,null);assert.equal(h.state.inventories[0].version,1);assert.deepEqual(h.writes,[]);
+});
+
+test('inventory editor validates integer counts, dates and required reasons before requesting a save',async()=>{
+  for(const values of [{small:'-1'},{family:'1.2'},{small:'1000000'},{small:''},{harvestDate:'2026-02-30'},{reason:''},{batchCode:''}]) {
+    const h=harness();await h.boot();h.openInventoryEditor('jingtai-apple');await h.saveInventoryForm(inventoryForm(values));
+    assert.equal(h.calls.filter(call=>call.method==='save-inventory').length,0);assert.ok(h.state.inventoryEditor.error);
+  }
+});
+
+test('changing a configured batch requires confirmation while same-batch quantity adjustment does not',async()=>{
+  const h=harness();h.behavior.inventories=[inventoryRecord()];await h.boot();h.openInventoryEditor('jingtai-apple');h.behavior.confirm=false;
+  await h.saveInventoryForm(inventoryForm({batchCode:'DEMO-APPLE-TWO'}));assert.equal(h.calls.filter(call=>call.method==='save-inventory').length,0);
+  await h.saveInventoryForm(inventoryForm({small:'19'}));assert.equal(h.calls.filter(call=>call.method==='save-inventory').length,1);assert.equal(h.state.inventoryEditor,null);
+});
+
+test('inventory conflict retains the original version and draft until a confirmed fresh read',async()=>{
+  const h=harness();h.behavior.inventories=[inventoryRecord()];await h.boot();h.openInventoryEditor('jingtai-apple');
+  h.behavior.saveInventory=async()=>{throw Object.assign(new Error('库存发生变化'),{status:409,code:'version_conflict'});};
+  await h.saveInventoryForm(inventoryForm({small:'18',reason:'保留填写'}));assert.equal(h.state.inventoryEditor.conflict,true);assert.equal(h.state.inventoryEditor.values.small,'18');assert.equal(h.state.inventoryEditor.expectedVersion,1);
+  await h.saveInventoryForm(inventoryForm());assert.equal(h.calls.filter(call=>call.method==='save-inventory').length,1);
+  h.behavior.inventories=[inventoryRecord({version:2,stocks:{small:17,family:12}})];h.behavior.confirm=false;await h.reloadInventoryEditor();assert.equal(h.state.inventoryEditor.values.small,'18');
+  h.behavior.confirm=true;await h.reloadInventoryEditor();assert.equal(h.state.inventoryEditor.expectedVersion,2);assert.equal(h.state.inventoryEditor.values.small,'17');assert.equal(h.state.inventoryEditor.conflict,false);
+});
+
+test('orders-only and aftersales-only purchasers cannot read or open inventory management',async()=>{
+  for(const permissions of [['orders'],['aftersales']]) {
+    const h=harness();h.cloud.session=merchantSession(permissions);await h.boot();h.changeView('inventory');assert.equal(h.state.view,'overview');
+    await click(h,{action:'edit-inventory',id:'jingtai-apple'});await click(h,{action:'inventory-history',id:'jingtai-apple'});assert.equal(h.state.inventoryEditor,null);assert.equal(h.calls.filter(call=>call.method.startsWith('inventory')).length,0);
+  }
+});
+
+test('inventory list filters and history escape batch, reason and actor data including review warnings',async()=>{
+  const h=harness();h.behavior.inventories=[inventoryRecord({batchCode:'<img src=x>',stocks:{small:2,family:0}})];
+  h.behavior.inventoryHistory=[{id:'EVENT-ONE',action:'release_review',createdAt:'2026-11-01T03:00:00.000Z',actorName:'<b>actor</b>',reason:'<script>bad</script>',orderId:'ORDER-ONE',before:inventoryRecord(),after:inventoryRecord()}];
+  await h.boot();h.changeView('inventory');assert.match(h.nodes.get('#admin-app').innerHTML,/&lt;img src=x&gt;/);assert.ok(!h.nodes.get('#admin-app').innerHTML.includes('<img src=x>'));
+  h.state.inventoryFilter.status='low';h.render();assert.ok(!h.nodes.get('#admin-app').innerHTML.includes('data-id="jingtai-apple"'));
+  h.state.inventoryFilter.status='empty';h.render();assert.ok(h.nodes.get('#admin-app').innerHTML.includes('data-id="jingtai-apple"'));
+  await click(h,{action:'inventory-history',id:'jingtai-apple'});const html=h.nodes.get('#admin-app').innerHTML;
+  assert.match(html,/旧批次取消/);assert.match(html,/没有自动增加新批次库存/);assert.match(html,/&lt;script&gt;bad&lt;\/script&gt;/);assert.ok(!html.includes('<b>actor</b>'));
+});
+
+test('late inventory reads, saves and history cannot restore a revoked product permission',async()=>{
+  for(const operation of ['read','save','history']) {
+    const h=harness();h.behavior.inventories=[inventoryRecord()];await h.boot();let finish,pending;
+    if(operation==='read'){h.behavior.loadInventories=()=>new Promise(resolve=>{finish=resolve;});pending=h.refreshRemote();}
+    else if(operation==='save'){h.openInventoryEditor('jingtai-apple');h.behavior.saveInventory=()=>new Promise(resolve=>{finish=resolve;});pending=h.saveInventoryForm(inventoryForm());}
+    else {h.behavior.loadInventoryHistory=()=>new Promise(resolve=>{finish=resolve;});pending=h.openInventoryHistory('jingtai-apple');}
+    for(let i=0;i<30&&!finish;i++)await Promise.resolve();assert.ok(finish);
+    h.cloud.session=merchantSession(['orders']);h.render();finish(operation==='read'?{inventories:[inventoryRecord()]}:operation==='save'?inventoryRecord({version:2}):[]);await pending;
+    assert.equal(h.state.inventories.length,0);assert.equal(h.state.inventoryEditor,null);assert.equal(h.state.inventoryHistory,null);assert.ok(!h.nodes.get('#admin-app').innerHTML.includes('DEMO-APPLE-ONE'));
+  }
+});
+
+test('delayed inventory reads cannot downgrade a successful newer version',async()=>{
+  const h=harness();h.behavior.inventories=[inventoryRecord()];await h.boot();let finish;h.behavior.loadInventories=()=>new Promise(resolve=>{finish=resolve;});const pending=h.refreshRemote();
+  for(let i=0;i<30&&!finish;i++)await Promise.resolve();assert.ok(finish);
+  h.openInventoryEditor('jingtai-apple');h.behavior.saveInventory=async()=>inventoryRecord({version:2,stocks:{small:18,family:12}});await h.saveInventoryForm(inventoryForm({small:'18'}));
+  finish({inventories:[inventoryRecord()]});await pending;assert.equal(h.state.inventories[0].version,2);assert.equal(h.state.inventories[0].stocks.small,18);
+});
+
+test('local inventory page explains its cloud boundary and never fabricates a saved inventory',async()=>{
+  const h=harness(),data=new Map();h.cloud.mode='local';h.cloud.session=null;h.context.localStorage={getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value)};
+  await h.boot();h.changeView('inventory');assert.match(h.nodes.get('#admin-app').innerHTML,/库存管理需要连接云端/);await click(h,{action:'edit-inventory',id:'jingtai-apple'});assert.equal(h.state.inventoryEditor,null);assert.equal(h.calls.length,0);
+});
+
+test('order cancellation release notices preserve the review message while escaping its text',()=>{
+  const h=harness(),html=h.stockReleaseNotice({stockRelease:{status:'review',message:'旧批次 <script>bad</script> 需要核对'}});
+  assert.match(html,/需要核对旧批次/);assert.match(html,/&lt;script&gt;bad&lt;\/script&gt;/);assert.ok(!html.includes('<script>bad</script>'));
 });

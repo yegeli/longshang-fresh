@@ -99,10 +99,26 @@ test('quotes and successful management mutations use only the designated JSON AP
   globalThis.fetch = async (path, options) => {
     const body = JSON.parse(options.body); calls.push({ path, body });
     assert.equal(options.method, 'POST'); assert.equal(options.headers['Content-Type'], 'application/json');
-    return path.endsWith('/quote') ? json({ quote: { items: [item], address: 'gansu', subtotal: 2468, shipping: 600, quantity: 2, total: 3068, productVersions: { 'retired-fruit': 3 } } }) : json({ order: { ...order('ONE', 2), merchantNote: '模拟备注' } });
+    return path.endsWith('/quote') ? json({ quote: { items: [item], address: 'gansu', subtotal: 2468, shipping: 600, quantity: 2, total: 3068, productVersions: { 'retired-fruit': 3 }, inventoryVersions: { 'retired-fruit': 7 } } }) : json({ order: { ...order('ONE', 2), merchantNote: '模拟备注' } });
   };
   const items = [{ productId: 'retired-fruit', variant: 'small', quantity: 2 }];
   assert.equal((await quoteCloudOrder(items, 'gansu')).total, 3068);
   assert.equal((await mutateCloudOrder('DEMO-ONE', 'note', { expectedVersion: 1, note: '模拟备注' }, { manager: true })).version, 2);
   assert.deepEqual(calls[0], { path: '/api/v1/orders/quote', body: { items, address: 'gansu' } });
+});
+
+test('order batch snapshots survive changed catalogs and malformed batch dates fail closed',()=>{
+  const snapshot={...item,batchId:'BATCH-ONE',batchCode:'DEMO-20261101',harvestDate:'2026-11-01',batchNote:'模拟采摘'};
+  setCatalog([]);
+  assert.deepEqual(orderItems({...order(),items:[snapshot]}),[snapshot]);
+  assert.deepEqual(orderItems({...order(),items:[{...snapshot,harvestDate:'2026-02-30'}]}),[]);
+  assert.deepEqual(orderItems({...order(),items:[{...snapshot,batchCode:undefined}]}),[]);
+});
+
+test('quotes without usable inventory versions cannot be submitted as confirmed stock quotes',async()=>{
+  await session(buyer('a'));
+  for(const inventoryVersions of [undefined,[],{}, {'retired-fruit':0}]){
+    globalThis.fetch=async()=>json({quote:{items:[item],address:'gansu',total:3068,productVersions:{'retired-fruit':1},inventoryVersions}});
+    await assert.rejects(quoteCloudOrder([{productId:item.productId,variant:'small',quantity:2}],'gansu'),error=>error.code==='invalid_order_response');
+  }
 });

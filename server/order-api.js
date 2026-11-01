@@ -1,5 +1,6 @@
 import { ADDRESSES, createAfterSale, updateAfterSale, shipOrder, saveOrderNote, resolveAfterSale } from '../public/model.js';
 import { hasPermission, managementGuard, visibleSellerSQL } from './merchant-access.js';
+import { inventoryDTO, inventoryJSON, MAX_STOCK } from './inventory-api.js';
 
 const PREFIX = '/api/v1';
 const ORDER_ID = /^DEMO-[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$/;
@@ -32,6 +33,7 @@ export async function handleOrderApi(request, env, helpers) {
   const dto = row => {
     const order = JSON.parse(row.order_json);
     if (!isAdminPath) delete order.merchantNote;
+    delete order._stockReleaseToken;
     return { ...order, version: row.version, updatedAt: row.updated_at };
   };
   const lookup = async id => {
@@ -64,20 +66,25 @@ export async function handleOrderApi(request, env, helpers) {
     const rows = (await db.prepare(`SELECT id,owner_id,product_json,version,image_media_id FROM products WHERE status='published' AND ${visibleSellerSQL('products.owner_id')} AND id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results || [];
     if (rows.length !== ids.length) fail(409, 'product_unavailable', '选中商品已下架或不存在，请刷新商品后重新确认。');
     if (new Set(rows.map(row => row.owner_id)).size !== 1) fail(422, 'mixed_merchants', '当前模拟订单仅支持同一商家的商品，请按商家分开下单。');
+    const inventoryRows = (await db.prepare(`SELECT * FROM product_inventory WHERE product_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results || [];
+    const inventories = new Map(inventoryRows.map(row => [row.product_id, inventoryDTO(row)]));
     const byId = new Map(rows.map(row => [row.id, row]));
     const items = selected.items.map(item => {
-      const row = byId.get(item.productId), product = JSON.parse(row.product_json);
+      const row = byId.get(item.productId), product = JSON.parse(row.product_json), inventory = inventories.get(item.productId);
+      if (!inventory || inventory.stocks[item.variant] < item.quantity) fail(409, 'stock_insufficient', '所选规格库存不足或尚未配置，请刷新后调整数量。');
       const variant = product.variants.find(value => value.id === item.variant);
       if (!variant || !Number.isSafeInteger(variant.price) || variant.price < 1) fail(409, 'product_unavailable', '商品规格已变更，请刷新商品后重新确认。');
       return { productId: row.id, product: product.name, image: product.image,
         ...(row.image_media_id ? { imageMediaId: row.image_media_id } : {}),
+        batchId: inventory.batchId, batchCode: inventory.batchCode, harvestDate: inventory.harvestDate, batchNote: inventory.note,
         variant: variant.id, variantLabel: variant.label, weight: variant.weight,
         unitPrice: variant.price, quantity: item.quantity, subtotal: variant.price * item.quantity };
     });
     const address = ADDRESSES.find(value => value.id === selected.address);
     const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0);
     return { quote: { items, quantity: items.reduce((sum, item) => sum + item.quantity, 0), subtotal, shipping: address.shipping,
-      total: subtotal + address.shipping, address: address.id, productVersions: Object.fromEntries(rows.sort((a, b) => a.id.localeCompare(b.id, 'en')).map(row => [row.id, row.version])) }, sellerId: rows[0].owner_id };
+      total: subtotal + address.shipping, address: address.id, productVersions: Object.fromEntries(rows.sort((a, b) => a.id.localeCompare(b.id, 'en')).map(row => [row.id, row.version])),
+      inventoryVersions: Object.fromEntries(ids.sort().map(id => [id, inventories.get(id).version])) }, sellerId: rows[0].owner_id, inventories };
   }
 
   if (path === base && request.method === 'GET') {
@@ -108,12 +115,15 @@ export async function handleOrderApi(request, env, helpers) {
   }
 
   if (!isAdminPath && path === base && request.method === 'POST') {
-    const body = await readBody(); allowed(body, ['items', 'address', 'expectedTotal', 'productVersions', 'idempotencyKey']);
+    const body = await readBody(); allowed(body, ['items', 'address', 'expectedTotal', 'productVersions', 'inventoryVersions', 'idempotencyKey']);
     const selected = selection(body), ids = [...new Set(selected.items.map(item => item.productId))].sort();
     if (typeof body.idempotencyKey !== 'string' || !REQUEST_KEY.test(body.idempotencyKey)) fail(400, 'idempotency_invalid', '请提供8至128位有效的重复提交保护编号。');
     if (!Number.isSafeInteger(body.expectedTotal) || body.expectedTotal < 1 || !object(body.productVersions)
       || Object.keys(body.productVersions).length !== ids.length || ids.some(id => !Object.hasOwn(body.productVersions, id) || !Number.isSafeInteger(body.productVersions[id]) || body.productVersions[id] < 1 || body.productVersions[id] > Number.MAX_SAFE_INTEGER)) fail(400, 'quote_invalid', '请先获取并确认有效的云端报价。');
-    const requestJson = JSON.stringify({ ...selected, expectedTotal: body.expectedTotal, productVersions: Object.fromEntries(ids.map(id => [id, body.productVersions[id]])) });
+    const hasInventoryVersions = Object.hasOwn(body, 'inventoryVersions');
+    if (hasInventoryVersions && (!object(body.inventoryVersions) || Object.keys(body.inventoryVersions).length !== ids.length || ids.some(id => !Number.isSafeInteger(body.inventoryVersions[id]) || body.inventoryVersions[id] < 1 || body.inventoryVersions[id] >= MAX_STOCK))) fail(400, 'quote_invalid', '库存报价版本无效，请重新读取。');
+    const requestJson = JSON.stringify({ ...selected, expectedTotal: body.expectedTotal, productVersions: Object.fromEntries(ids.map(id => [id, body.productVersions[id]])),
+      ...(hasInventoryVersions ? { inventoryVersions: Object.fromEntries(ids.map(id => [id, body.inventoryVersions[id]])) } : {}) });
     const replay = async () => {
       const previous = await db.prepare('SELECT * FROM orders WHERE buyer_id=? AND request_key=?').bind(user.id, body.idempotencyKey).first();
       if (!previous) return null;
@@ -121,19 +131,32 @@ export async function handleOrderApi(request, env, helpers) {
       return json({ order: dto(previous), replayed: true });
     };
     const previous = await replay(); if (previous) return previous;
-    const { quote, sellerId } = await quoteFor(selected);
-    if (quote.total !== body.expectedTotal || ids.some(id => quote.productVersions[id] !== body.productVersions[id])) fail(409, 'quote_changed', '商品价格或资料已变化，请重新读取报价并确认后下单。');
+    if (!hasInventoryVersions) fail(400, 'quote_invalid', '请重新获取包含库存版本的报价后下单。');
+    const { quote, sellerId, inventories } = await quoteFor(selected);
+    if (quote.total !== body.expectedTotal || ids.some(id => quote.productVersions[id] !== body.productVersions[id] || quote.inventoryVersions[id] !== body.inventoryVersions[id])) fail(409, 'quote_changed', '商品价格或资料已变化，请重新读取报价并确认后下单。');
     const first = quote.items[0], count = new Set(quote.items.map(item => item.productId)).size, time = now();
     const order = { id: uuid('DEMO'), createdAt: time, ...first, product: count > 1 ? `${first.product}等${count}款商品` : first.product,
       items: quote.items, quantity: quote.quantity, subtotal: quote.subtotal, shipping: quote.shipping, total: quote.total,
       address: quote.address, status: 'created', afterSaleHistory: [] };
-    const conditions = ids.map(() => "(id=? AND version=? AND status='published' AND owner_id=?)");
-    const guardValues = ids.flatMap(id => [id, quote.productVersions[id], sellerId]);
-    const saved = await db.prepare(`INSERT INTO orders(id,buyer_id,seller_id,request_key,request_json,order_json,version,created_at,updated_at)
-      SELECT ?,?,?,?,?,?,1,?,? WHERE (SELECT count(*) FROM products WHERE (${conditions.join(' OR ')}) AND ${visibleSellerSQL('products.owner_id')})=?
-      ON CONFLICT(buyer_id,request_key) DO NOTHING RETURNING *`)
-      .bind(order.id, user.id, sellerId, body.idempotencyKey, requestJson, JSON.stringify(order), time, time, ...guardValues, ids.length).first();
-    if (!saved) { const retried = await replay(); if (retried) return retried; fail(409, 'quote_changed', '商品在下单时发生变化，请重新获取报价后确认。'); }
+    const quantities = id => Object.fromEntries(['small','family'].map(variant => [variant, selected.items.filter(item => item.productId === id && item.variant === variant).reduce((sum,item) => sum+item.quantity,0)]));
+    const conditions = ids.map(() => "(p.id=? AND p.version=? AND p.status='published' AND p.owner_id=? AND EXISTS(SELECT 1 FROM product_inventory i WHERE i.product_id=p.id AND i.version=? AND i.small_stock>=? AND i.family_stock>=?))");
+    const guardValues = ids.flatMap(id => [id, quote.productVersions[id], sellerId, quote.inventoryVersions[id], quantities(id).small, quantities(id).family]);
+    const statements = [db.prepare(`INSERT INTO orders(id,buyer_id,seller_id,request_key,request_json,order_json,version,created_at,updated_at)
+      SELECT ?,?,?,?,?,?,1,?,? WHERE (SELECT count(*) FROM products p WHERE (${conditions.join(' OR ')}) AND ${visibleSellerSQL('p.owner_id')})=?
+      ON CONFLICT(buyer_id,request_key) DO NOTHING`)
+      .bind(order.id,user.id,sellerId,body.idempotencyKey,requestJson,JSON.stringify(order),time,time,...guardValues,ids.length)];
+    for (const productId of ids) {
+      const amount = quantities(productId), before = inventories.get(productId);
+      const after = {...before,stocks:{small:before.stocks.small-amount.small,family:before.stocks.family-amount.family},version:before.version+1,updatedAt:time};
+      statements.push(db.prepare(`INSERT INTO inventory_events(id,product_id,actor_id,action,reason,order_id,before_json,after_json,created_at)
+        SELECT ?,?,?,'reserved',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM orders WHERE id=?)`)
+        .bind(uuid('STOCK'),productId,user.id,'模拟下单扣减可售数量',order.id,JSON.stringify(before),JSON.stringify(after),time,order.id));
+      statements.push(db.prepare(`UPDATE product_inventory SET small_stock=small_stock-?,family_stock=family_stock-?,version=version+1,updated_at=?,updated_by=?
+        WHERE product_id=? AND EXISTS(SELECT 1 FROM orders WHERE id=?)`).bind(amount.small,amount.family,time,user.id,productId,order.id));
+    }
+    await db.batch(statements);
+    const saved = await db.prepare('SELECT * FROM orders WHERE id=?').bind(order.id).first();
+    if (!saved) { const retried = await replay(); if (retried) return retried; fail(409, 'quote_changed', '库存或商品在下单时发生变化，请重新获取报价后确认。'); }
     return json({ order: dto(saved), replayed: false }, 201);
   }
 
@@ -170,8 +193,42 @@ export async function handleOrderApi(request, env, helpers) {
   if (action.startsWith('aftersale')) next.afterSaleHistory = [...(order.afterSaleHistory || []), { ...next.afterSale }];
   const ownership = isAdminPath ? " AND (seller_id=? OR EXISTS(SELECT 1 FROM users WHERE user_id=? AND role='admin'))" : ' AND buyer_id=?';
   const access = isAdminPath ? ` AND ${managementGuard(permission)}` : '';
+  const time = now();
+  // Only new inventory-backed orders can release stock. A unique token gates
+  // every follow-up statement, so a losing version race can never restock twice.
+  const backed = action === 'cancel' && Array.isArray(order.items) && order.items.length && order.items.every(item => typeof item.batchId === 'string' && item.batchId.startsWith('BATCH-'));
+  if (backed) {
+    const releaseToken = uuid('RELEASE'), ids = [...new Set(order.items.map(item => item.productId))];
+    const quantities = id => Object.fromEntries(['small','family'].map(variant => [variant,order.items.filter(item => item.productId === id && item.variant === variant).reduce((sum,item) => sum+item.quantity,0)]));
+    const guards = ids.map(() => 'EXISTS(SELECT 1 FROM product_inventory i WHERE i.product_id=? AND i.batch_id=? AND i.small_stock<=? AND i.family_stock<=? AND i.version<?)');
+    const guardValues = ids.flatMap(productId => { const q=quantities(productId); return [productId,order.items.find(item=>item.productId===productId).batchId,MAX_STOCK-q.small,MAX_STOCK-q.family,MAX_STOCK]; });
+    const eligible = guards.join(' AND ');
+    const releaseGate = status => `EXISTS(SELECT 1 FROM orders o WHERE o.id=? AND json_extract(o.order_json,'$._stockReleaseToken')=? AND json_extract(o.order_json,'$.stockRelease.status')='${status}')`;
+    const statements = [db.prepare(`UPDATE orders SET order_json=json_set(json(?),'$._stockReleaseToken',?,'$.stockRelease',
+      json(CASE WHEN ${eligible} THEN json_object('status','released','message','取消成功，同批次库存已回补。')
+      ELSE json_object('status','review','message','取消成功，批次已变化或库存需核对，整单未自动回补，请联系采购者。') END)),
+      version=version+1,updated_at=? WHERE id=? AND version=?${ownership}${access}`)
+      .bind(JSON.stringify(next),releaseToken,...guardValues,time,id,expected,user.id)];
+    for (const productId of ids) {
+      const q = quantities(productId);
+      statements.push(db.prepare(`INSERT INTO inventory_events(id,product_id,actor_id,action,reason,order_id,before_json,after_json,created_at)
+        SELECT ?,?,?,'released',?,?,${inventoryJSON('i')},${inventoryJSON('i','i.small_stock+?','i.family_stock+?','i.version+1','?')},?
+        FROM product_inventory i WHERE i.product_id=? AND ${releaseGate('released')}`)
+        .bind(uuid('STOCK'),productId,user.id,'取消未发货模拟订单，同批次回补',id,q.small,q.family,time,time,productId,id,releaseToken));
+      statements.push(db.prepare(`UPDATE product_inventory SET small_stock=small_stock+?,family_stock=family_stock+?,version=version+1,updated_at=?,updated_by=?
+        WHERE product_id=? AND ${releaseGate('released')}`).bind(q.small,q.family,time,user.id,productId,id,releaseToken));
+      statements.push(db.prepare(`INSERT INTO inventory_events(id,product_id,actor_id,action,reason,order_id,before_json,after_json,created_at)
+        SELECT ?,?,?,'release_review',?,?,${inventoryJSON('i')},${inventoryJSON('i')},?
+        FROM product_inventory i WHERE i.product_id=? AND ${releaseGate('review')}`)
+        .bind(uuid('STOCK'),productId,user.id,'取消成功，批次变化或安全范围需核对；整单不自动回补',id,time,productId,id,releaseToken));
+    }
+    await db.batch(statements);
+    const saved = await db.prepare('SELECT * FROM orders WHERE id=?').bind(id).first();
+    if (!saved || JSON.parse(saved.order_json)._stockReleaseToken !== releaseToken) fail(409, 'version_conflict', '订单已在其他设备更新，请刷新后重新操作；本次未覆盖。');
+    return json({order:dto(saved)});
+  }
   const saved = await db.prepare(`UPDATE orders SET order_json=?,version=version+1,updated_at=? WHERE id=? AND version=?${ownership}${access} RETURNING *`)
-    .bind(JSON.stringify(next), now(), id, expected, user.id, ...(isAdminPath ? [user.id, user.id] : [])).first();
+    .bind(JSON.stringify(next), time, id, expected, user.id, ...(isAdminPath ? [user.id, user.id] : [])).first();
   if (!saved) fail(409, 'version_conflict', '订单已在其他设备更新，请刷新后重新操作；本次未覆盖。');
   return json({ order: dto(saved) });
 }

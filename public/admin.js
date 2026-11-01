@@ -4,6 +4,7 @@ import { hydrateMedia, imageFor, videoFor, saveMedia, mediaErrorFor } from './me
 import { initializeCloudMode, getCloudState, isCloudMode, apiRequest, authHref, hasPermission, managementScopeKey } from './cloud-client.js';
 import { loadCloudOrders, loadCloudOrder, mutateCloudOrder } from './order-store.js';
 import { loadMerchants, loadMerchant, saveMerchant, loadMerchantAudit } from './merchant-store.js';
+import { loadInventories, saveInventory, loadInventoryHistory } from './inventory-store.js';
 import { esc, icon } from './ui.js';
 
 const app = document.querySelector('#admin-app');
@@ -16,7 +17,7 @@ const categoryNames = { fruit: '水果鲜食', dried: '枸杞干货', vegetable:
 const productStatuses = { published: '在售', draft: '草稿', offline: '已下架' };
 const afterStatuses = { submitted: '待处理', resolved: '已完成', withdrawn: '已撤回' };
 const afterReasons = { damaged: '破损或品质问题', spec: '规格不符', delivery: '配送问题', other: '其他问题' };
-const viewNames = { overview: '经营概览', products: '商品管理', orders: '订单管理', aftersales: '售后管理', merchants: '商家账号' };
+const viewNames = { overview: '经营概览', products: '商品管理', orders: '订单管理', aftersales: '售后管理', merchants: '商家账号', inventory: '库存批次' };
 const imagePresets = [
   ['assets/apples.jpg', '苹果'], ['assets/goji.jpg', '枸杞'], ['assets/pear.jpg', '鲜梨'],
   ['assets/potato.jpg', '土豆'], ['assets/corn.jpg', '玉米'], ['assets/onion.jpg', '洋葱']
@@ -27,6 +28,7 @@ const state = {
   ordersFilter: { query: '', status: 'all' }, aftersalesFilter: { query: '', status: 'all' },
   externalChanged: false, mediaIssues: [], busy: false, ready: false, syncing: false,
   ordersSyncedAt: '', accountId: null, accessRole: null, scopeKey: null, epoch: 0,
+  inventories: [], inventoryEditor: null, inventoryHistory: null, inventoryFilter: { query: '', status: 'all' },
   merchants: [], merchantEditor: null, merchantAudit: null, merchantFilter: { query: '', region: 'all', status: 'all', bound: 'all' }
 };
 let toastTimer;
@@ -51,7 +53,7 @@ function toast(message) {
 }
 function can(permission) { return !isCloudMode() || hasPermission(permission); }
 function isAdmin() { return isCloudMode() && getCloudState().session?.role === 'admin'; }
-function canView(view) { return view === 'overview' || (view === 'merchants' ? !isCloudMode() || isAdmin() : can(view)); }
+function canView(view) { if (view === 'inventory') return can('products'); return view === 'overview' || (view === 'merchants' ? !isCloudMode() || isAdmin() : can(view)); }
 function hasAccess() {
   const cloud = getCloudState();
   return state.ready && (cloud.mode === 'local' || (cloud.mode === 'cloud' && cloud.session?.user && cloud.session.canManage === true && !cloud.error && ['products', 'orders', 'aftersales'].some(permission => hasPermission(permission))));
@@ -92,6 +94,7 @@ function renderSyncStatus() {
 }
 function clearPrivateState() {
   state.epoch++; state.products = []; state.orders = []; state.ordersSyncedAt = ''; state.drawer = null; state.editor = null;
+  state.inventories = []; state.inventoryEditor = null; state.inventoryHistory = null; state.inventoryFilter = { query: '', status: 'all' };
   state.merchants = []; state.merchantEditor = null; state.merchantAudit = null; state.mediaIssues = []; state.errors = {};
   state.productsFilter={query:'',category:'all',status:'all'}; state.ordersFilter={query:'',status:'all'}; state.aftersalesFilter={query:'',status:'all'}; state.merchantFilter={query:'',region:'all',status:'all',bound:'all'};
   state.externalChanged = false; state.accountId = null; state.accessRole = null; state.scopeKey = null;
@@ -151,11 +154,17 @@ async function loadManagementData(scope) {
   if (isAdmin()) {
     try { await refreshMerchants(scope); } catch (error) { if (lostAccess(error)) throw error; }
   }
+  if (!scopeValid(scope)) return;
+  if (isCloudMode() && can('products')) {
+    try { await refreshInventories(scope); } catch (error) { if (lostAccess(error)) throw error; }
+  }
+  if (!scopeValid(scope)) return;
 }
 async function refreshRemote({ manual = false } = {}) {
   if (!hasAccess() || !isCloudMode() || state.syncing || state.busy) return;
   if (state.editor) syncEditor(document.querySelector('#product-form'));
   if (state.merchantEditor) syncMerchantEditor(document.querySelector('#merchant-form'));
+  if (state.inventoryEditor) syncInventoryEditor(document.querySelector('#inventory-form'));
   const previousScope = state.scopeKey;
   state.syncing = true; renderSyncStatus();
   try {
@@ -172,7 +181,7 @@ async function refreshRemote({ manual = false } = {}) {
     }
     if (state.editor) { state.externalChanged = true; renderAlerts(); }
     else if (!state.drawer) render();
-    if (manual) toast(state.editor || state.drawer || state.merchantEditor ? '已读取云端；当前填写内容保留，重新载入前不会覆盖。' : '已更新当前账号可管理的云端资料');
+    if (manual) toast(state.editor || state.drawer || state.merchantEditor || state.inventoryEditor ? '已读取云端；当前填写内容保留，重新载入前不会覆盖。' : '已更新当前账号可管理的云端资料');
   } catch (error) { state.errors.sync = textError(error); if (lostAccess(error) || !getCloudState().session?.canManage || previousScope !== state.scopeKey) { clearPrivateState(); state.ready = false; renderGate(textError(error)); } else renderAlerts(); }
   finally { state.syncing = false; renderSyncStatus(); }
 }
@@ -261,7 +270,7 @@ function render() {
   if (!verifyCurrentAccount() || !hasAccess()) { renderGate(); return; }
   if (!canView(state.view)) state.view = 'overview';
   nav.hidden = false; renderSyncStatus();
-  const title = state.merchantEditor ? (state.merchantEditor.isNew ? '添加商家' : '编辑商家账号') : state.editor ? (state.editor.isNew ? '新增商品' : '编辑商品') : viewNames[state.view];
+  const title = state.inventoryEditor ? '设置库存与批次' : state.merchantEditor ? (state.merchantEditor.isNew ? '添加商家' : '编辑商家账号') : state.editor ? (state.editor.isNew ? '新增商品' : '编辑商品') : viewNames[state.view];
   document.querySelector('#view-title').textContent = title;
   document.title = `${title} · 陇上鲜集管理后台`;
   nav.querySelectorAll('[data-view]').forEach(button => {
@@ -271,7 +280,7 @@ function render() {
     if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   });
   renderAlerts();
-  app.innerHTML = state.editor ? productEditor() : ({ overview, products: productsPage, orders: ordersPage, aftersales: aftersalesPage, merchants: merchantsPage })[state.view]();
+  app.innerHTML = state.editor ? productEditor() : ({ overview, products: productsPage, orders: ordersPage, aftersales: aftersalesPage, merchants: merchantsPage, inventory: inventoryPage })[state.view]();
   wireMediaErrors(app); renderDrawer();
 }
 function sectionIntro(kicker, title, copy, action = '') {
@@ -288,6 +297,106 @@ function overview() {
     <div class="metric-grid">${metrics.map(([number, label, target, i]) => `<button class="metric-card" data-action="metric" data-target="${target}"><span>${esc(label)} ${icon(i, 20)}</span><strong>${number}<small>${target === 'products' ? '款' : '笔'}</small></strong><em>进入管理 ${icon('arrow', 13)}</em></button>`).join('')}</div>
     <p class="local-scope-note">${isCloudMode() ? '仅显示当前账号获准管理的云端资料，手机和电脑登录同一账号可同步。' : '订单与售后为本机模拟。'} 所有订单、发货与售后均为模拟，不代表真实收入。</p>
     ${can('orders') ? `<section class="panel"><div class="panel-heading"><div><h3>最近的订单</h3><p>核对订单后可保存备注与模拟发货。</p></div><button class="text-button" data-view="orders">查看全部 ${icon('arrow', 14)}</button></div>${orderTable([...state.orders].sort((a,b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 5))}</section>` : can('aftersales') ? `<section class="panel permission-welcome"><h3>专注处理售后</h3><p>当前账号只会读取已发生售后的订单，核对申请后留下清楚的模拟处理意见。</p><button class="secondary" data-view="aftersales">前往售后管理</button></section>` : `<section class="panel permission-welcome"><h3>先把一款好物介绍清楚</h3><p>完善商品规格、价格、图片和产地视频，保存后可在买家页面查看。</p><button class="secondary" data-view="products">前往商品管理</button></section>`}`;
+}
+const inventoryStatuses = { unconfigured: '未设置库存', empty: '有规格缺货', low: '有规格库存偏低', ready: '库存充足' };
+function inventoryFor(productId) {
+  return state.inventories.find(item => item.productId === productId) || { productId, configured:false, stocks:{small:0,family:0},batchId:'',batchCode:'',harvestDate:'',note:'',version:0,updatedAt:null };
+}
+function inventoryStatus(item) {
+  if (!item.configured) return 'unconfigured';
+  if (Object.values(item.stocks).some(value => value === 0)) return 'empty';
+  return Object.values(item.stocks).some(value => value <= 5) ? 'low' : 'ready';
+}
+async function refreshInventories(scope = operationScope()) {
+  if (!isCloudMode() || !can('products')) return;
+  try {
+    const data = await loadInventories({admin:true});
+    if (!scopeValid(scope)) return;
+    const previous = new Map(state.inventories.map(item => [item.productId,item]));
+    state.inventories = data.inventories.map(item => previous.get(item.productId)?.version > item.version ? previous.get(item.productId) : item);
+    delete state.errors.inventory;
+    if (state.inventoryEditor && inventoryFor(state.inventoryEditor.productId).version !== state.inventoryEditor.expectedVersion) state.inventoryEditor.externalChanged=true;
+  } catch (error) { if (scopeValid(scope)) state.errors.inventory=`库存与批次未同步：${textError(error)}`; throw error; }
+}
+function inventoryPage() {
+  if (!isCloudMode()) return `${sectionIntro('INVENTORY & HARVEST', '库存批次', '按规格记录可售余量，让采收介绍跟随订单。')}<section class="panel permission-welcome"><h3>库存管理需要连接云端</h3><p>本机演示不扣减或回补云端库存。请在云端以有商品管理权限的账号登录后设置。</p></section>`;
+  if (!can('products')) return '';
+  if (state.inventoryEditor) return inventoryEditorPage();
+  if (state.inventoryHistory) return inventoryHistoryPage();
+  const f=state.inventoryFilter;
+  const list=state.products.filter(product => (!f.query || [product.name,product.origin,inventoryFor(product.id).batchCode].join(' ').toLowerCase().includes(f.query.toLowerCase())) && (f.status==='all' || inventoryStatus(inventoryFor(product.id))===f.status));
+  const missing=state.products.filter(product=>!inventoryFor(product.id).configured).length;
+  return `${sectionIntro('INVENTORY & HARVEST', '先核实余量，再把好物送出去。', '每种规格按“份”管理当前可售余量，不是农场总产量；所有数量与采收资料仍为模拟。')}
+    <section class="inventory-explainer"><strong>${missing ? `${missing} 款商品还未设置库存` : '库存与模拟订单在云端联动'}</strong><p>未配置或对应规格为 0 时不能新下单。模拟下单扣减余量，符合条件的取消只回补一次；售后不会自动回库。更换批次后，旧批次取消会留下待核对记录。</p></section>
+    <section class="panel"><form class="filter-bar" id="search-inventory"><label class="search-control">${icon('search',18)}<input name="query" value="${esc(f.query)}" placeholder="搜索商品、产地或批次" aria-label="搜索商品、产地或批次" maxlength="80"></label><label class="select-control"><span>库存状态</span><select data-filter="inventory" name="status">${options(inventoryStatuses,f.status,'全部库存')}</select></label><button type="submit" class="secondary">搜索</button><button type="button" class="text-button" data-action="reset-inventory-filter">重置</button></form><div class="table-caption">共 ${list.length} 款商品<span>按商品规格管理 · 余量单位：份</span></div>${list.length ? `<div class="table-wrap"><table class="admin-table inventory-table"><thead><tr><th>商品</th><th>两种规格可售余量</th><th>当前采收批次</th><th>库存状态</th><th>操作</th></tr></thead><tbody>${list.map(product=>{ const item=inventoryFor(product.id), status=inventoryStatus(item); return `<tr><td data-label="商品"><div class="merchant-identity"><strong>${esc(product.name)}</strong><small>${esc(product.origin)} · ${esc(productStatuses[product.status] || product.status)}</small></div></td><td data-label="可售余量"><div class="inventory-counts">${product.variants.map(variant=>`<span>${esc(variant.label)}<b>${item.stocks[variant.id]}<small>份</small></b></span>`).join('')}</div></td><td data-label="采收批次"><strong class="inventory-batch">${esc(item.batchCode || '待填写')}</strong><small class="cell-note">${esc(item.harvestDate || '未填写采收日期')}</small></td><td data-label="状态">${badge(inventoryStatuses[status], status==='ready'?'published':'warning')}</td><td data-label="操作"><div class="row-actions"><button class="text-button" data-action="edit-inventory" data-id="${esc(product.id)}" ${state.errors.inventory?'disabled':''}>${item.configured?'调整库存':'设置库存'}</button><button class="text-button" data-action="inventory-history" data-id="${esc(product.id)}">库存记录</button></div></td></tr>`;}).join('')}</tbody></table></div>` : empty('没有符合条件的商品','先在商品管理中添加商品，或调整筛选条件。')}</section>`;
+}
+function inventoryEditorFrom(productId) {
+  const item=inventoryFor(productId);
+  return {productId,base:clone(item),expectedVersion:item.version,dirty:false,conflict:false,externalChanged:false,error:'',values:{small:String(item.stocks.small),family:String(item.stocks.family),batchCode:item.batchCode,harvestDate:item.harvestDate,note:item.note,reason:''}};
+}
+function openInventoryEditor(productId) {
+  if (!isCloudMode() || !can('products') || state.errors.inventory || !state.products.some(item=>item.id===productId) || !mayLeaveEditor()) return;
+  state.view='inventory'; state.inventoryEditor=inventoryEditorFrom(productId); closeDrawer(); render();
+}
+function inventoryEditorPage() {
+  const e=state.inventoryEditor,v=e.values,product=state.products.find(item=>item.id===e.productId);
+  return `<div class="editor-heading"><button type="button" class="text-button back-button" data-action="back-inventory">${icon('back',16)} 返回库存列表</button><span>${e.dirty?'有未保存的修改':'点击保存才会写入云端'}</span></div>${sectionIntro('CURRENT AVAILABLE STOCK', product?.name || '设置库存', '填写当前还可以出售的份数；订单已经扣减的份数不应重复计入。')}<form id="inventory-form" class="merchant-editor inventory-editor"><section class="panel form-panel"><div class="form-section-heading"><span>01</span><div><h3>两种规格的可售余量</h3><p>数量为整数份数，0 表示该规格暂时缺货。</p></div></div><div class="inventory-template"><button type="button" class="secondary small" data-action="inventory-template">填入模拟库存 20 / 12</button><small>只填写表单，不会自动保存；正式供货前应重新核实。</small></div><div class="form-grid">${(product?.variants || []).map(variant=>field(`${variant.label} · 可售份数`,variant.id,v[variant.id],'type="number" required min="0" max="999999" step="1" inputmode="numeric"')).join('')}</div><p class="field-help">每次人工设置为 0–999999 份。取消回补可能使当前余量高于此上限，展示数量以云端为准，请核对后再调整。</p></section>
+    <section class="panel form-panel"><div class="form-section-heading"><span>02</span><div><h3>当前采收批次</h3><p>将当前批次和介绍保存在新订单快照中，之后修改不会改变旧订单。</p></div></div><div class="form-grid">${field('批次编号','batchCode',v.batchCode,'required maxlength="80" placeholder="例如 DEMO-JINGTAI-20261101"')}${field('采收日期（可留空）','harvestDate',v.harvestDate,'type="date"')}<div class="full-width">${textarea('批次介绍（模拟）','note',v.note,300)}</div><div class="full-width">${textarea('本次调整原因','reason',v.reason,200)}</div></div><p class="form-warning">更换批次编号或采收日期会开始新批次。旧批次订单取消时不会加到新批次库存，需在库存记录中核对；售后退款或补发也不会自动回库。</p></section>
+    <section class="panel merchant-save-panel">${e.conflict || e.externalChanged ? `<div class="drawer-sync-note changed"><p>${e.conflict?'库存已在下单或其他设备操作后变化，当前填写内容已保留。':'云端余量有更新，当前填写内容仍保留，保存时会检查版本。'}请先复制需要的内容，再放弃当前填写并重新读取。</p><button type="button" class="text-button" data-action="reload-inventory">放弃当前填写并重新读取</button></div>`:''}<div id="inventory-form-error" class="field-error" role="alert">${esc(e.error)}</div><button type="submit" class="primary" ${state.busy||e.conflict?'disabled':''}>${state.busy?'正在保存…':'保存库存与批次'}</button><button type="button" class="text-button" data-action="back-inventory">返回列表</button><small>只保存模拟库存，不接支付。</small></section></form>`;
+}
+function syncInventoryEditor(form) {
+  const e=state.inventoryEditor;if(!e||!form)return;
+  const data=new FormData(form);
+  for(const name of ['small','family','batchCode','harvestDate','note','reason']) if(data.has(name)) e.values[name]=String(data.get(name));
+}
+function fillInventoryTemplate() {
+  const e=state.inventoryEditor;if(!isCloudMode()||!can('products')||!e)return;
+  const date=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  e.values={small:'20',family:'12',batchCode:`DEMO-${e.productId.toUpperCase()}-${date.replaceAll('-','')}`,harvestDate:date,note:'模拟采收批次：规格与采摘情况待真实货源核实。',reason:'初始化模拟可售库存'};
+  e.dirty=true;render();
+}
+async function saveInventoryForm(form) {
+  const e=state.inventoryEditor;if(!isCloudMode()||!can('products')||!e||state.busy||e.conflict)return;
+  syncInventoryEditor(form);const v=e.values,stocks={small:Number(v.small),family:Number(v.family)};
+  if(['small','family'].some(key=>!String(v[key]).trim()||!Number.isSafeInteger(stocks[key])||stocks[key]<0||stocks[key]>999999)) {e.error='两种规格的可售余量必须是 0–999999 的整数份数。';render();return;}
+  const input={stocks,batchCode:v.batchCode.trim(),harvestDate:v.harvestDate.trim(),note:v.note.trim(),reason:v.reason.trim()};
+  if(!input.batchCode||input.batchCode.length>80||!input.reason||input.reason.length>200||input.note.length>300) {e.error='请填写批次编号和调整原因，并核对各字段的长度。';render();return;}
+  if(input.harvestDate && (!/^\d{4}-\d{2}-\d{2}$/.test(input.harvestDate)||Number.isNaN(Date.parse(`${input.harvestDate}T00:00:00Z`))||new Date(`${input.harvestDate}T00:00:00Z`).toISOString().slice(0,10)!==input.harvestDate)) {e.error='请输入有效的采收日期，或留空。';render();return;}
+  if(e.base.configured&&(input.batchCode!==e.base.batchCode||input.harvestDate!==e.base.harvestDate)&&!window.confirm('确定更换当前采收批次吗？旧批次订单取消后不会自动加到新库存，需要另行核对。'))return;
+  const scope=operationScope();state.busy=true;e.error='';render();
+  try {
+    const item=await saveInventory(e.productId,input,{expectedVersion:e.expectedVersion});
+    if(!scopeValid(scope)||state.inventoryEditor!==e)return;
+    state.inventories=[...state.inventories.filter(value=>value.productId!==item.productId),item];delete state.errors.inventory;
+    state.inventoryEditor=null;toast('库存与批次已保存到云端');
+  } catch(error) {
+    if(!scopeValid(scope)||state.inventoryEditor!==e)return;
+    if(lostAccess(error)){clearPrivateState();state.ready=false;renderGate(textError(error));return;}
+    e.conflict=error.status===409&&(!error.code||error.code==='version_conflict');e.error=e.conflict?'库存版本已变化，请保留需要的填写内容后重新读取。':`保存未完成：${textError(error)}`;
+  } finally {state.busy=false;if(scopeValid(scope))render();}
+}
+async function reloadInventoryEditor() {
+  const e=state.inventoryEditor;if(!isCloudMode()||!can('products')||!e||state.busy||!window.confirm('重新读取将放弃尚未保存的库存与批次资料，确定继续吗？'))return;
+  const scope=operationScope();state.busy=true;
+  try {await refreshInventories(scope);if(scopeValid(scope)&&state.inventoryEditor===e)state.inventoryEditor=inventoryEditorFrom(e.productId);}
+  catch(error){if(scopeValid(scope)){if(lostAccess(error)){clearPrivateState();state.ready=false;renderGate(textError(error));}else e.error=textError(error);}}
+  finally {state.busy=false;if(scopeValid(scope))render();}
+}
+function inventorySnapshot(value) {
+  if(!value?.configured)return '尚未设置库存';
+  return `规格一 ${value.stocks?.small ?? 0} 份 · 规格二 ${value.stocks?.family ?? 0} 份 · ${value.batchCode || '未填写批次'}${value.harvestDate?` · ${value.harvestDate}`:''}`;
+}
+function inventoryHistoryPage() {
+  const history=state.inventoryHistory;
+  return `<div class="editor-heading"><button type="button" class="text-button back-button" data-action="back-inventory">${icon('back',16)} 返回库存列表</button></div>${sectionIntro('STOCK ACTIVITY',`${history.name} · 库存记录`,'最近 50 条调整、下单扣减与取消回补记录；换批次的取消需要人工核对。', `<button type="button" class="secondary" data-action="inventory-history" data-id="${esc(history.productId)}">刷新记录</button>`)}<section class="panel merchant-audit inventory-history">${history.error?`<p class="field-error" role="alert">${esc(history.error)}</p><button type="button" class="secondary" data-action="inventory-history" data-id="${esc(history.productId)}">重新读取</button>`:history.events===null?'<p class="initial-state">正在读取库存记录…</p>':history.events.length?`<ol>${history.events.map(event=>`<li class="${event.action==='release_review'?'inventory-review':''}"><div><strong>${esc(({adjusted:'人工调整库存',reserved:'模拟下单扣减',released:'取消订单回补',release_review:'旧批次取消 · 待核对'})[event.action]||event.action)}</strong><time>${esc(dateText(event.createdAt))}</time></div><small>操作人：${esc(event.actorName||'系统')}${event.orderId?` · 订单 ${esc(event.orderId)}`:''}</small><p>${esc(event.reason||'')}</p><p><b>变更前</b>${esc(inventorySnapshot(event.before))}</p><p><b>变更后</b>${esc(inventorySnapshot(event.after))}</p>${event.action==='release_review'?'<p class="inventory-review-note">没有自动增加新批次库存。请核对原批次余量，确认后在库存页人工调整并填写原因。</p>':''}</li>`).join('')}</ol>`:empty('暂无库存记录','首次保存库存后，调整与模拟订单的库存变动会显示在这里。')}</section>`;
+}
+async function openInventoryHistory(productId) {
+  if(!isCloudMode()||!can('products')||!state.products.some(item=>item.id===productId)||!mayLeaveEditor())return;
+  const history={productId,name:state.products.find(item=>item.id===productId).name,events:null,error:''},scope=operationScope();
+  state.view='inventory';state.inventoryHistory=history;render();
+  try {const events=await loadInventoryHistory(productId);if(scopeValid(scope)&&state.inventoryHistory===history)history.events=events;}
+  catch(error){if(scopeValid(scope)&&state.inventoryHistory===history){if(lostAccess(error)){clearPrivateState();state.ready=false;renderGate(textError(error));return;}history.error=textError(error);}}
+  if(scopeValid(scope))render();
 }
 const permissionNames = { products: '商品与素材', orders: '订单与模拟发货', aftersales: '售后处理' };
 const merchantStatusNames = { enabled: '已启用', disabled: '已停用' };
@@ -390,9 +499,9 @@ function options(values, current, allLabel) {
 function productsPage() {
   const f = state.productsFilter;
   const list = state.products.filter(p => (f.category === 'all' || f.category === p.category) && (f.status === 'all' || f.status === (p.status || 'published')) && (!f.query || [p.name,p.origin,p.subtitle].join(' ').toLowerCase().includes(f.query.toLowerCase())));
-  return `${sectionIntro('PRODUCTS', '把家乡好物摆上货架', '编辑商品信息与规格，保存后可到买家页面查看。', '<button class="primary" data-action="new-product">＋ 新增商品</button>')}
+  return `${sectionIntro('PRODUCTS', '把家乡好物摆上货架', isCloudMode() ? '先完善商品信息，再到库存批次设置可售余量；未设库存不能下单。' : '编辑商品信息与规格，保存后可到买家页面查看。', '<button class="primary" data-action="new-product">＋ 新增商品</button>')}
   <section class="panel">${searchToolbar('products', '搜索商品名称、产地', `<label class="select-control"><span>分类</span><select data-filter="products" name="category" aria-label="商品分类">${options(categoryNames, f.category, '全部分类')}</select></label><label class="select-control"><span>状态</span><select data-filter="products" name="status" aria-label="商品状态">${options(productStatuses, f.status, '全部状态')}</select></label>`)}
-  ${isCloudMode() && !state.products.length && getCloudState().session?.role === 'admin' ? '<div class="cloud-seed"><p>云端目录尚为空，可初始化六款模拟商品；不会覆盖已有记录。</p><button class="secondary" data-action="seed-cloud">初始化示例商品</button></div>' : ''}<div class="table-caption">共 ${list.length} 款商品<span>${isCloudMode() ? '商品状态同步到云端买家目录。' : '上架、下架均只影响本浏览器的买家演示。'}</span></div>${list.length ? `<div class="table-wrap"><table class="admin-table products-table"><thead><tr><th>商品</th><th>分类</th><th>规格价格</th><th>状态</th><th>操作</th></tr></thead><tbody>${list.map(p => `<tr><td data-label="商品"><div class="table-product"><img src="${esc(imageFor(p))}" alt="${esc(p.name)}" data-fallback="${esc(p.image)}"><div><strong>${esc(p.name)}</strong><small>${esc(p.origin)}</small><em>${p.imageMediaId ? (isCloudMode() ? '云端图片' : '本机图片') : '内置图片'}${p.video || p.videoMediaId ? ' · 含视频' : ''}</em></div></div></td><td data-label="分类">${esc(categoryNames[p.category] || p.category)}</td><td data-label="规格价格"><div class="variant-price">${p.variants.map(v => `<span>${esc(v.label)} <b>¥${money(v.price)}</b></span>`).join('')}</div></td><td data-label="状态">${badge(productStatuses[p.status || 'published'], p.status || 'published')}</td><td data-label="操作"><div class="row-actions"><button class="text-button" data-action="edit-product" data-id="${esc(p.id)}">编辑</button><button class="text-button ${p.status === 'published' || !p.status ? 'muted-action' : ''}" data-action="toggle-product" data-id="${esc(p.id)}" data-status="${p.status === 'published' || !p.status ? 'offline' : 'published'}">${p.status === 'published' || !p.status ? '下架' : '上架'}</button></div></td></tr>`).join('')}</tbody></table></div>` : empty('没有找到商品', '试试更换关键词或筛选条件，也可以新增一款商品。')}</section>`;
+  ${isCloudMode() && !state.products.length && getCloudState().session?.role === 'admin' ? '<div class="cloud-seed"><p>云端目录尚为空，可初始化六款模拟商品；不会覆盖已有记录。</p><button class="secondary" data-action="seed-cloud">初始化示例商品</button></div>' : ''}<div class="table-caption">共 ${list.length} 款商品<span>${isCloudMode() ? '商品状态同步到云端买家目录。' : '上架、下架均只影响本浏览器的买家演示。'}</span></div>${list.length ? `<div class="table-wrap"><table class="admin-table products-table"><thead><tr><th>商品</th><th>分类</th><th>规格价格</th><th>状态</th><th>操作</th></tr></thead><tbody>${list.map(p => `<tr><td data-label="商品"><div class="table-product"><img src="${esc(imageFor(p))}" alt="${esc(p.name)}" data-fallback="${esc(p.image)}"><div><strong>${esc(p.name)}</strong><small>${esc(p.origin)}</small><em>${p.imageMediaId ? (isCloudMode() ? '云端图片' : '本机图片') : '内置图片'}${p.video || p.videoMediaId ? ' · 含视频' : ''}</em></div></div></td><td data-label="分类">${esc(categoryNames[p.category] || p.category)}</td><td data-label="规格价格"><div class="variant-price">${p.variants.map(v => `<span>${esc(v.label)} <b>¥${money(v.price)}</b></span>`).join('')}</div></td><td data-label="状态">${badge(productStatuses[p.status || 'published'], p.status || 'published')}</td><td data-label="操作"><div class="row-actions"><button class="text-button" data-action="edit-product" data-id="${esc(p.id)}">编辑</button>${isCloudMode()?`<button class="text-button" data-action="edit-inventory" data-id="${esc(p.id)}">库存</button>`:''}<button class="text-button ${p.status === 'published' || !p.status ? 'muted-action' : ''}" data-action="toggle-product" data-id="${esc(p.id)}" data-status="${p.status === 'published' || !p.status ? 'offline' : 'published'}">${p.status === 'published' || !p.status ? '下架' : '上架'}</button></div></td></tr>`).join('')}</tbody></table></div>` : empty('没有找到商品', '试试更换关键词或筛选条件，也可以新增一款商品。')}</section>`;
 }
 function editorFrom(product, isNew = false) {
   const base = clone(product);
@@ -412,7 +521,7 @@ function productEditor() {
   <section class="panel form-panel"><div class="form-section-heading"><span>02</span><div><h3>两种规格与价格</h3><p>价格单位为元，最多两位小数。规格和净重请写清楚。</p></div></div><div class="variant-edit-grid">${[['small','规格一'],['family','规格二']].map(([key,label]) => `<fieldset class="variant-fieldset"><legend>${label}</legend>${field('规格名称', `${key}Label`, v[`${key}Label`], 'required maxlength="40"')}${field('重量或数量', `${key}Weight`, v[`${key}Weight`], 'required maxlength="60"')}${field('销售价格 元', `${key}Price`, v[`${key}Price`], 'required inputmode="decimal" autocomplete="off" placeholder="例如 29.90"')}</fieldset>`).join('')}</div></section>
   <section class="panel form-panel"><div class="form-section-heading"><span>03</span><div><h3>商品图片与介绍视频</h3><p>可选内置素材，也可选择真实本地文件。${isCloudMode() ? '文件将上传云端素材库；保存商品后才会绑定到买家页面。' : '文件只保存在本浏览器，不会上传服务器；保存商品后才会在买家端生效。'}</p></div></div>${textarea('素材来源与授权说明（选择文件时随素材保存）', 'mediaSource', v.mediaSource, 500)}<p class="field-help">上传前请填写实际来源。替换文件时可修改说明；请勿上传无权使用或含个人隐私的内容。</p>${mediaIssue ? `<p class="form-warning">${esc(mediaIssue)}</p>` : ''}<div class="media-editor"><div class="media-image-block"><div class="preview-image"><img src="${esc(e.imagePreview || e.base.image || 'assets/apples.jpg')}" alt="当前商品图片预览" data-fallback="${esc(e.base.image || 'assets/orchard.jpg')}"><span>${e.base.imageMediaId ? (isCloudMode() ? '云端图片预览' : '本机图片预览') : '内置素材预览'}</span></div><div class="media-label"><h4>商品图片</h4><label class="upload-button">${e.pending.image ? '正在验证图片…' : '选择本地图片'}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-media="image" aria-label="选择本地商品图片"></label></div><p class="field-help">JPG、PNG、WebP、GIF，最大 5MB。</p>${e.mediaErrors.image ? `<p class="field-error" role="alert">${esc(e.mediaErrors.image)}</p>` : ''}<div class="preset-images" aria-label="内置商品图片">${imagePresets.map(([src,label]) => `<button type="button" class="${!e.base.imageMediaId && e.base.image === src ? 'selected' : ''}" data-action="preset-image" data-image="${src}" aria-label="选择${label}内置图片"><img src="${src}" alt=""><span>${label}</span></button>`).join('')}</div></div>
   <div class="media-video-block"><div class="media-label"><h4>介绍视频</h4><label class="upload-button">${e.pending.video ? '正在验证视频…' : '选择本地视频'}<input type="file" accept="video/mp4,video/webm" data-media="video" aria-label="选择本地商品介绍视频"></label></div><p class="field-help">MP4、WebM，最大 30MB。建议先压缩成适合手机播放的短视频。</p><div class="video-preset-row"><button type="button" class="text-button" data-action="clear-video">不使用视频</button></div>${e.mediaErrors.video ? `<p class="field-error" role="alert">${esc(e.mediaErrors.video)}</p>` : ''}<div class="video-preview">${e.videoPreview ? `<video src="${esc(e.videoPreview)}" controls playsinline preload="metadata" aria-label="当前介绍视频预览"></video>` : '<div class="no-video">暂未选择视频</div>'}</div>${field('视频标题', 'videoTitle', v.videoTitle, 'maxlength="100"')}${textarea('视频说明', 'videoNote', v.videoNote, 300)}</div></div></section></div>
-  <aside class="editor-aside"><section class="panel save-panel"><span class="eyebrow">保存并预览</span><h3>${e.isNew ? '让一款好物亮相' : '更新这份商品信息'}</h3><p>草稿不进入在售列表，暂不可选购；上架后买家页面可选购。演示素材需与实际商品描述区分。</p><div class="save-status">当前状态 ${badge(productStatuses[e.base.status || 'draft'], e.base.status || 'draft')}</div><div id="product-form-error" class="field-error" role="alert">${esc(e.error)}</div><button type="submit" class="primary wide" name="saveMode" value="published" ${e.pending.image || e.pending.video || state.busy ? 'disabled' : ''}>保存并上架</button><button type="submit" class="secondary wide" name="saveMode" value="draft" ${e.pending.image || e.pending.video || state.busy ? 'disabled' : ''}>保存草稿</button><button type="button" class="text-button wide" data-action="back-products">返回列表</button><small>选择文件后的预览不是商品保存结果，请完成上面的保存。</small></section></aside></form>`;
+  <aside class="editor-aside"><section class="panel save-panel"><span class="eyebrow">保存并预览</span><h3>${e.isNew ? '让一款好物亮相' : '更新这份商品信息'}</h3><p>${isCloudMode()?'草稿不进入在售列表；上架后还需在库存批次设置可售余量，买家才能模拟下单。':'草稿不进入在售列表，暂不可选购；上架后买家页面可选购。'}演示素材需与实际商品描述区分。</p><div class="save-status">当前状态 ${badge(productStatuses[e.base.status || 'draft'], e.base.status || 'draft')}</div><div id="product-form-error" class="field-error" role="alert">${esc(e.error)}</div><button type="submit" class="primary wide" name="saveMode" value="published" ${e.pending.image || e.pending.video || state.busy ? 'disabled' : ''}>保存并上架</button><button type="submit" class="secondary wide" name="saveMode" value="draft" ${e.pending.image || e.pending.video || state.busy ? 'disabled' : ''}>保存草稿</button><button type="button" class="text-button wide" data-action="back-products">返回列表</button><small>选择文件后的预览不是商品保存结果，请完成上面的保存。</small></section></aside></form>`;
 }
 function matchesOrder(order, filter) {
   const searchable = [order.id, ...orderItems(order).map(item => item.product)].join(' ').toLowerCase();
@@ -433,7 +542,7 @@ function aftersalesPage() {
   return `${sectionIntro(isCloudMode() ? 'CLOUD DEMO AFTER SALES' : 'LOCAL DEMO AFTER SALES', isCloudMode() ? '云端模拟售后' : '本机模拟售后', isCloudMode() ? '买家申请、撤回与商家处理意见保存云端，同一账号跨设备可查看进度。' : '看清本机模拟问题、核对整单金额，再留下处理意见。')}<section class="panel">${searchToolbar('aftersales', '搜索订单号、售后号或商品', `<label class="select-control"><span>状态</span><select data-filter="aftersales" name="status" aria-label="售后状态">${options(afterStatuses, f.status, '全部状态')}</select></label>`)}<div class="table-caption">共 ${list.length} 笔售后<span>模拟退款和补发均不会产生真实资金或物流操作。</span></div>${list.length ? `<div class="table-wrap"><table class="admin-table after-table"><thead><tr><th>售后申请</th><th>方式与原因</th><th>整单金额</th><th>状态</th><th>操作</th></tr></thead><tbody>${list.map(order => `<tr><td data-label="售后申请"><div class="order-cell"><button class="order-id" data-action="open-after" data-id="${esc(order.id)}">${esc(order.afterSale.id)}</button><p>${esc(order.product)}</p><small>${esc(order.id)}</small></div></td><td data-label="方式与原因"><div>${order.afterSale.type === 'refund' ? '整单模拟退款' : '整单模拟补发'}</div><small class="cell-note">${afterReasons[order.afterSale.reason]}</small></td><td data-label="整单金额"><strong class="table-money">¥${money(order.total)}</strong></td><td data-label="状态">${badge(afterStatuses[order.afterSale.status], order.afterSale.status)}</td><td data-label="操作"><button class="text-button" data-action="open-after" data-id="${esc(order.id)}">${order.afterSale.status === 'submitted' ? '去处理' : '查看记录'} ${icon('arrow', 13)}</button></td></tr>`).join('')}</tbody></table></div>` : empty(state.errors.orders ? '售后暂时无法读取' : '暂时没有售后记录', state.errors.orders ? '请重新读取云端订单，未确认成功时不要重复操作。' : '买家端提交演示售后后，会在这里显示。')}</section>`;
 }
 function itemList(order) {
-  return `<div class="drawer-items">${orderItems(order).map(item => `<div class="drawer-item"><img src="${esc(imageFor(item))}" alt="${esc(item.product)}"><div><strong>${esc(item.product)}</strong><p>${esc(item.variantLabel)} · ${esc(item.weight)}</p><small>¥${money(item.unitPrice)} × ${item.quantity}</small></div><b>¥${money(item.subtotal)}</b></div>`).join('')}</div>`;
+  return `<div class="drawer-items">${orderItems(order).map(item => `<div class="drawer-item"><img src="${esc(imageFor(item))}" alt="${esc(item.product)}"><div><strong>${esc(item.product)}</strong><p>${esc(item.variantLabel)} · ${esc(item.weight)}</p><small>¥${money(item.unitPrice)} × ${item.quantity}</small>${item.batchCode?`<p class="order-batch-snapshot">下单批次 ${esc(item.batchCode)}${item.harvestDate?` · ${esc(item.harvestDate)}`:''}</p>`:''}</div><b>¥${money(item.subtotal)}</b></div>`).join('')}</div>`;
 }
 function bill(order) {
   return `<dl class="drawer-bill"><div><dt>商品金额</dt><dd>¥${money(order.subtotal)}</dd></div><div><dt>演示运费</dt><dd>¥${money(order.shipping)}</dd></div><div class="bill-total"><dt>整单合计</dt><dd>¥${money(order.total)}</dd></div></dl>`;
@@ -449,7 +558,7 @@ function renderDrawer() {
   const address = ADDRESSES.find(item => item.id === order.address);
   const isAfter = d.type === 'after';
   drawerRoot.innerHTML = `<div class="drawer-overlay"><button class="drawer-backdrop" data-action="close-drawer" aria-label="关闭详情"></button><section class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1"><header class="drawer-heading"><div><span class="eyebrow">${isAfter ? 'AFTER SALES' : 'ORDER DETAIL'}</span><h2 id="drawer-title">${isAfter ? '售后处理详情' : '订单详情'}</h2></div><button class="icon-button" data-action="close-drawer" aria-label="关闭详情">${icon('close', 22)}</button></header><div class="drawer-body"><div id="drawer-sync-notice"></div><div class="detail-status"><div>${badge(isAfter ? afterStatuses[order.afterSale?.status] : orderStatusName(order), isAfter ? order.afterSale?.status : orderStatus(order))}<strong>${esc(isAfter ? order.afterSale?.id : order.id)}</strong></div><p>${isSample(order) ? '后台示例订单，无真实客户。' : isCloudMode() ? `买家端云订单 · 版本 ${d.expectedVersion} · 不对应真实资金与物流。` : '买家端生成的本浏览器演示订单。'}</p></div>${itemList(order)}${bill(order)}
-    ${isAfter ? afterDetail(order, d) : `<section class="detail-section"><h3>示例收货信息</h3><div class="address-detail">${icon('pin', 20)}<div><strong>${esc(address?.person || '体验用户')} · ${esc(address?.label || '')}</strong><p>${esc(address?.address || '示例地址')}</p><small>仅示例地区，不含真实收件资料。</small></div></div></section><section class="detail-section"><h3>订单时间</h3><p class="detail-copy">创建于 ${dateText(order.createdAt)}</p>${isShipped(order) ? `<p class="detail-copy">模拟发货于 ${dateText(order.fulfillment.shippedAt)}</p><dl class="shipping-meta"><div><dt>演示物流</dt><dd>${esc(order.fulfillment.carrier)}</dd></div><div><dt>演示单号</dt><dd>${esc(order.fulfillment.tracking)}</dd></div></dl>` : ''}</section><section class="detail-section"><h3>商家备注</h3><form id="order-note-form"><label class="sr-only" for="merchant-note">商家备注，最多300字</label><textarea id="merchant-note" name="note" rows="3" maxlength="300" placeholder="写下需要留意的处理信息…">${esc(d.note)}</textarea><button class="secondary small" type="submit">保存备注</button></form></section>${order.afterSale && can('aftersales') ? `<button class="linked-after" data-action="open-after" data-id="${esc(order.id)}"><div><strong>${afterStatuses[order.afterSale.status]} · ${order.afterSale.type === 'refund' ? '模拟退款' : '模拟补发'}</strong><span>查看问题与处理记录</span></div>${icon('arrow', 17)}</button>` : ''}${isWaiting(order) ? `<section class="detail-section shipping-section"><h3>模拟发货</h3>${order.afterSale?.status === 'submitted' ? '<p class="form-warning">有待处理售后，请先处理或由买家撤回申请。</p>' : `<form id="ship-form"><div class="form-grid">${field('物流名称', 'carrier', d.carrier, 'required maxlength="40"')}${field('演示单号', 'tracking', d.tracking, 'required maxlength="80" placeholder="DEMO-开头的演示单号"')}</div><p class="field-help">仅保存演示物流记录，不会通知快递或生成真实运单。</p><button type="submit" class="primary wide">确认模拟发货</button></form>`}</section>` : ''}`}
+    ${stockReleaseNotice(order)}${isAfter ? afterDetail(order, d) : `<section class="detail-section"><h3>示例收货信息</h3><div class="address-detail">${icon('pin', 20)}<div><strong>${esc(address?.person || '体验用户')} · ${esc(address?.label || '')}</strong><p>${esc(address?.address || '示例地址')}</p><small>仅示例地区，不含真实收件资料。</small></div></div></section><section class="detail-section"><h3>订单时间</h3><p class="detail-copy">创建于 ${dateText(order.createdAt)}</p>${isShipped(order) ? `<p class="detail-copy">模拟发货于 ${dateText(order.fulfillment.shippedAt)}</p><dl class="shipping-meta"><div><dt>演示物流</dt><dd>${esc(order.fulfillment.carrier)}</dd></div><div><dt>演示单号</dt><dd>${esc(order.fulfillment.tracking)}</dd></div></dl>` : ''}</section><section class="detail-section"><h3>商家备注</h3><form id="order-note-form"><label class="sr-only" for="merchant-note">商家备注，最多300字</label><textarea id="merchant-note" name="note" rows="3" maxlength="300" placeholder="写下需要留意的处理信息…">${esc(d.note)}</textarea><button class="secondary small" type="submit">保存备注</button></form></section>${order.afterSale && can('aftersales') ? `<button class="linked-after" data-action="open-after" data-id="${esc(order.id)}"><div><strong>${afterStatuses[order.afterSale.status]} · ${order.afterSale.type === 'refund' ? '模拟退款' : '模拟补发'}</strong><span>查看问题与处理记录</span></div>${icon('arrow', 17)}</button>` : ''}${isWaiting(order) ? `<section class="detail-section shipping-section"><h3>模拟发货</h3>${order.afterSale?.status === 'submitted' ? '<p class="form-warning">有待处理售后，请先处理或由买家撤回申请。</p>' : `<form id="ship-form"><div class="form-grid">${field('物流名称', 'carrier', d.carrier, 'required maxlength="40"')}${field('演示单号', 'tracking', d.tracking, 'required maxlength="80" placeholder="DEMO-开头的演示单号"')}</div><p class="field-help">仅保存演示物流记录，不会通知快递或生成真实运单。</p><button type="submit" class="primary wide">确认模拟发货</button></form>`}</section>` : ''}`}
     ${isAfter ? '' : afterHistory(order)}<div id="drawer-error" class="field-error" role="alert">${esc(d.error || '')}</div></div></section></div>`;
   renderDrawerNotice();
   drawerRoot.querySelectorAll('[type="submit"]').forEach(button => { button.disabled = state.busy || !!d.conflict; });
@@ -482,7 +591,14 @@ function openDrawer(type, id) {
   state.drawer = { type, id, order: clone(order), expectedVersion: order.version, note: order.merchantNote || '', carrier: '演示物流', tracking: `DEMO-${Date.now().toString(36).toUpperCase()}`, reply: order.afterSale?.merchantReply || '', error: '', externalChanged: false, conflict: false };
   renderDrawer(); drawerRoot.querySelector('.drawer')?.focus();
 }
+function stockReleaseNotice(order) {
+  if (!order.stockRelease?.status) return '';
+  const review=order.stockRelease.status==='review';
+  return `<section class="stock-release-note ${review?'review':''}"><strong>${review?'取消回补 · 需要核对旧批次':'取消回补记录'}</strong><p>${esc(order.stockRelease.message || (review?'旧批次库存未自动加到新批次，请在库存记录中核对。':'本次取消已完成库存回补。'))}</p></section>`;
+}
 function mayLeaveEditor() {
+  if (state.inventoryEditor?.dirty && !window.confirm('库存修改尚未保存。确定离开并放弃这些修改吗？')) return false;
+  state.inventoryEditor=null; state.inventoryHistory=null;
   if (state.merchantEditor?.dirty && !window.confirm('商家资料尚未保存。确定离开并放弃这些修改吗？')) return false;
   state.merchantEditor=null; state.merchantAudit=null;
   if (state.editor?.dirty && !window.confirm('商品修改尚未保存。确定离开并放弃这些修改吗？')) return false;
@@ -542,7 +658,7 @@ async function saveEditor(form, mode) {
     await saveProduct(input, { expectedVersion: e.expectedVersion });
     if (!scopeValid(scope) || state.editor !== e) return;
     state.editor = null; state.externalChanged = false; state.view = 'products'; loadData(); render();
-    toast(mode === 'draft' ? '商品草稿已保存' : '商品已保存并上架'); window.scrollTo({ top: 0 });
+    toast(mode === 'draft' ? '商品草稿已保存' : isCloudMode() ? '商品已保存并上架，请到库存批次核实可售余量' : '商品已保存并上架'); window.scrollTo({ top: 0 });
   } catch (error) {
     if (!scopeValid(scope) || state.editor !== e) return;
     if (lostAccess(error)) { clearPrivateState(); state.ready=false; renderGate(textError(error)); return; }
@@ -638,6 +754,13 @@ document.addEventListener('click', async event => {
   if (button.dataset.view) { changeView(button.dataset.view); return; }
   const { action, id } = button.dataset;
   if (['new-product','edit-product','toggle-product','reload-editor','preset-image','clear-video','back-products'].includes(action) && !can('products')) return;
+  if (['edit-inventory','inventory-template','reload-inventory','inventory-history','back-inventory'].includes(action) && (!can('products') || !isCloudMode())) return;
+  if (action === 'edit-inventory') { openInventoryEditor(id); return; }
+  if (action === 'inventory-template') { fillInventoryTemplate(); return; }
+  if (action === 'reload-inventory') { await reloadInventoryEditor(); return; }
+  if (action === 'inventory-history') { await openInventoryHistory(id); return; }
+  if (action === 'back-inventory') { changeView('inventory'); return; }
+  if (action === 'reset-inventory-filter') { state.inventoryFilter={query:'',status:'all'}; render(); return; }
   if (['new-merchant','edit-merchant','merchant-template','reload-merchant','audit-merchant'].includes(action) && !isAdmin()) return;
   if (action === 'new-merchant') { if (!mayLeaveEditor()) return; state.merchantEditor=merchantEditorFrom(); state.view='merchants'; render(); return; }
   if (action === 'edit-merchant') { if (!mayLeaveEditor()) return; const merchant=state.merchants.find(item => item.id === id); if (merchant) { state.merchantEditor=merchantEditorFrom(merchant); state.view='merchants'; render(); } return; }
@@ -698,6 +821,7 @@ document.addEventListener('click', async event => {
 });
 document.addEventListener('input', event => {
   const form = event.target.closest('form');
+  if (form?.id === 'inventory-form' && state.inventoryEditor && can('products')) { syncInventoryEditor(form); state.inventoryEditor.dirty=true; }
   if (form?.id === 'merchant-form' && state.merchantEditor && isAdmin()) { syncMerchantEditor(form); state.merchantEditor.dirty=true; }
   if (form?.id === 'product-form' && state.editor && !event.target.matches('[data-media]')) {
     if (Object.hasOwn(state.editor.values, event.target.name)) state.editor.values[event.target.name] = event.target.value;
@@ -711,10 +835,12 @@ document.addEventListener('input', event => {
 });
 document.addEventListener('change', event => {
   const target = event.target;
+  if (target.closest('#inventory-form') && state.inventoryEditor && can('products')) { syncInventoryEditor(target.closest('form')); state.inventoryEditor.dirty=true; }
   if (target.closest('#merchant-form') && state.merchantEditor && isAdmin()) { syncMerchantEditor(target.closest('form')); state.merchantEditor.dirty=true; }
   if (target.matches('[data-media]')) { chooseFile(target); return; }
   if (target.dataset.filter) {
     const kind = target.dataset.filter;
+    if (!state[`${kind}Filter`]) return;
     const form = target.closest('form'); state[`${kind}Filter`].query = String(new FormData(form).get('query') || '').trim();
     state[`${kind}Filter`][target.name] = target.value; render();
   }
@@ -722,6 +848,7 @@ document.addEventListener('change', event => {
 });
 document.addEventListener('submit', async event => {
   event.preventDefault(); if (!verifyCurrentAccount() || !hasAccess()) { renderGate(); return; } if (state.busy) return; const form = event.target;
+  if (form.id === 'inventory-form') { await saveInventoryForm(form); return; }
   if (form.id === 'merchant-form') { await saveMerchantForm(form); return; }
   if (form.id.startsWith('search-')) { const kind = form.id === 'search-merchants' ? 'merchant' : form.id.slice(7); if (!state[`${kind}Filter`]) return; state[`${kind}Filter`].query = String(new FormData(form).get('query') || '').trim(); render(); return; }
   if (form.id === 'product-form') { saveEditor(form, event.submitter?.value || 'published'); return; }
@@ -745,7 +872,7 @@ document.addEventListener('keydown', event => {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }
 });
-window.addEventListener('beforeunload', event => { if (state.editor?.dirty || state.merchantEditor?.dirty) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (state.editor?.dirty || state.merchantEditor?.dirty || state.inventoryEditor?.dirty) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('storage', async event => {
   if (!hasAccess() || ![CATALOG_KEY, STORAGE_KEY, null].includes(event.key)) return;
   if (isCloudMode()) return;

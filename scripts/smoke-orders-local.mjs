@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { BASE_CATALOG } from '../public/model.js';
 
 // Raw identity headers simulate the trusted dispatch ONLY on a loopback Worker.
 // Never permit production URLs, credentials, redirects, or a different API base.
@@ -22,6 +23,7 @@ const buyerA = { id: `smoke-a-${run}`, email: `smoke-a-${run}@example.test` };
 const buyerB = { id: `smoke-b-${run}`, email: `smoke-b-${run}@example.test` };
 let checks = 0;
 const orders = [];
+let testProduct;
 
 async function call(path, { user = null, method = 'GET', body, expected = 200 } = {}) {
   assert.ok(path.startsWith('/api/v1/'));
@@ -47,7 +49,7 @@ async function create(items) {
   const { quote } = await mutation('/orders/quote', { items, address: 'gansu' }, buyerA);
   assert.equal(quote.address, 'gansu'); assert.ok(Number.isSafeInteger(quote.total) && quote.total > 0);
   assert.equal(quote.total, quote.subtotal + quote.shipping);
-  const input = { items, address: 'gansu', expectedTotal: quote.total, productVersions: quote.productVersions, idempotencyKey: `SMOKE-${randomUUID()}` };
+  const input = { items, address: 'gansu', expectedTotal: quote.total, productVersions: quote.productVersions, inventoryVersions: quote.inventoryVersions, idempotencyKey: `SMOKE-${randomUUID()}` };
   const created = await mutation('/orders', input, buyerA, 201);
   assert.equal(created.replayed, false); assert.equal(created.order.total, quote.total);
   assert.equal(created.order.version, 1); assert.equal(created.order.status, 'created');
@@ -63,14 +65,15 @@ try {
   const customer = await call('/api/v1/session', { user: buyerA });
   assert.equal(customer.role, 'buyer'); assert.equal(customer.canManage, false);
   await call('/api/v1/orders', { expected: 401 });
-  let catalog = await call('/api/v1/products');
-  if (!catalog.products?.length) {
-    assert.equal(operator.role, 'admin', 'An empty local catalog requires an administrator to explicitly seed.');
-    await mutation('/admin/seed', {}, admin);
-    catalog = await call('/api/v1/products');
-  }
-  const product = catalog.products.find(product => product.status === 'published' && product.variants?.length);
-  assert.ok(product, 'Publish a simulated product before the local smoke test.');
+  assert.equal(operator.role, 'admin', 'The local smoke test creates a dedicated simulated product.');
+  const product = { ...structuredClone(BASE_CATALOG[0]), id: `smoke-orders-${run.slice(0, 8)}`, name: '订单验收苹果（本机模拟）', status: 'published' };
+  testProduct = (await call('/api/v1/admin/products/' + product.id, { user: admin, method: 'PUT', body: { product, expectedVersion: 0 } })).product;
+  const currentInventory = (await call('/api/v1/admin/inventory', { user: admin })).inventories.find(value => value.productId === product.id);
+  assert.ok(currentInventory);
+  await call('/api/v1/admin/inventory/' + product.id, { user: admin, method: 'PUT', body: {
+    expectedVersion: currentInventory.version, stocks: { small: 10, family: 10 }, batchCode: `ORDERS-SMOKE-${run.slice(0, 8)}`,
+    harvestDate: new Date().toISOString().slice(0, 10), note: '本机自动验收专用模拟批次，不代表真实货源。', reason: '配置本机订单验收模拟库存'
+  } });
   const items = [{ productId: product.id, variant: product.variants[0].id, quantity: 1 }];
   let { order, input } = await create(items);
   const replay = await mutation('/orders', input, buyerA);
@@ -116,8 +119,14 @@ try {
   const cancelled = (await readOrder(second.id, { ...buyerA })).order;
   assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.version, 4);
   assert.deepEqual(cancelled.afterSaleHistory.map(value => value.status), ['submitted', 'withdrawn']);
-  console.log(JSON.stringify({ result: 'PASS', checks, orders, simulated: true, payment: false, realShipment: false }));
 } catch (error) {
   console.error(JSON.stringify({ result: 'FAIL', checks, ordersCreated: orders.length, message: error.message }));
   process.exitCode = 1;
+} finally {
+  if (testProduct) {
+    try {
+      await call('/api/v1/admin/products/' + testProduct.id, { user: admin, method: 'PUT', body: { product: { ...testProduct, status: 'offline' }, expectedVersion: testProduct.version } });
+    } catch { console.error('The dedicated local test product could not be taken offline.'); process.exitCode = 1; }
+  }
 }
+if (!process.exitCode) console.log(JSON.stringify({ result: 'PASS', checks, orders, simulated: true, payment: false, realShipment: false }));

@@ -111,3 +111,39 @@ export const merchantAudit = sqliteTable('merchant_audit', {
   check('merchant_audit_before', sql`${table.beforeJson} is null or json_valid(${table.beforeJson})`),
   check('merchant_audit_after', sql`json_valid(${table.afterJson})`)
 ]);
+
+// Missing inventory is deliberately unavailable; migrations never invent stock.
+export const productInventory = sqliteTable('product_inventory', {
+  productId: text('product_id').primaryKey().references(() => products.id),
+  smallStock: integer('small_stock').notNull(),
+  familyStock: integer('family_stock').notNull(),
+  batchId: text('batch_id').notNull(),
+  batchCode: text('batch_code').notNull(),
+  harvestDate: text('harvest_date').notNull(),
+  note: text('note').notNull(),
+  version: integer('version').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  updatedBy: text('updated_by').notNull().references(() => users.id)
+}, table => [
+  check('inventory_small_stock', sql`${table.smallStock} >= 0 and ${table.smallStock} <= 9007199254740991`),
+  check('inventory_family_stock', sql`${table.familyStock} >= 0 and ${table.familyStock} <= 9007199254740991`),
+  check('inventory_version', sql`${table.version} >= 1 and ${table.version} <= 9007199254740991`)
+]);
+
+export const inventoryEvents = sqliteTable('inventory_events', {
+  id: text('id').primaryKey(),
+  productId: text('product_id').notNull().references(() => products.id),
+  actorId: text('actor_id').notNull().references(() => users.id),
+  action: text('action').notNull(),
+  reason: text('reason').notNull(),
+  orderId: text('order_id').references(() => orders.id),
+  beforeJson: text('before_json'),
+  afterJson: text('after_json').notNull(),
+  createdAt: text('created_at').notNull()
+}, table => [
+  index('inventory_events_product_created').on(table.productId, table.createdAt),
+  uniqueIndex('inventory_events_order_action').on(table.orderId, table.productId, table.action),
+  check('inventory_event_action', sql`${table.action} in ('adjusted','reserved','released','release_review')`),
+  check('inventory_event_before', sql`${table.beforeJson} is null or json_valid(${table.beforeJson})`),
+  check('inventory_event_after', sql`json_valid(${table.afterJson})`)
+]);

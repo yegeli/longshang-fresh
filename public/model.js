@@ -388,13 +388,20 @@ function cleanOrderItem(item, legacy = false, cloudSnapshot = false) {
   if (!product || !variant || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 10
     || !['unitPrice', 'subtotal'].every(key => Number.isSafeInteger(item[key]) && item[key] >= 0)
     || item.subtotal !== item.unitPrice * item.quantity) return null;
+  const batchFields = ['batchId', 'batchCode', 'harvestDate', 'batchNote'];
+  const hasBatch = batchFields.some(key => item[key] !== undefined);
+  const batchText = (value, length) => typeof value === 'string' && value.length <= length && !/[\u0000-\u001f\u007f]/.test(value);
+  if (hasBatch && (!batchText(item.batchId, 100) || !item.batchId || !batchText(item.batchCode, 80) || !item.batchCode.trim()
+    || !batchText(item.batchNote, 300) || typeof item.harvestDate !== 'string'
+    || (item.harvestDate !== '' && (!/^\d{4}-\d{2}-\d{2}$/.test(item.harvestDate) || !Number.isFinite(Date.parse(item.harvestDate)) || new Date(item.harvestDate).toISOString().slice(0, 10) !== item.harvestDate)))) return null;
   return {
     productId: product.id, product: snapshotText(item.product, product.name),
     image: typeof item.image === 'string' && /^assets\/(?!.*\.\.)[a-zA-Z0-9/_-]+\.(jpg|jpeg|png|webp|gif|svg)$/.test(item.image) ? item.image : product.image,
     ...(typeof item.imageMediaId === 'string' && item.imageMediaId.length > 0 && item.imageMediaId.length <= 120 ? { imageMediaId: item.imageMediaId } : {}),
     variant: variant.id, variantLabel: snapshotText(item.variantLabel, variant.label),
     weight: snapshotText(item.weight, variant.weight), unitPrice: item.unitPrice,
-    quantity: item.quantity, subtotal: item.subtotal
+    quantity: item.quantity, subtotal: item.subtotal,
+    ...(hasBatch ? Object.fromEntries(batchFields.map(key => [key, item[key]])) : {})
   };
 }
 

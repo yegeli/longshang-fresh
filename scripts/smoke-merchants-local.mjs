@@ -58,12 +58,18 @@ async function createProduct(user, id, name) {
   const product = { ...structuredClone(BASE_CATALOG[0]), id, name, status: 'published' };
   const result = await call('/api/v1/admin/products/' + id, { user, method: 'PUT', body: { product, expectedVersion: 0 } });
   assert.equal(result.product.id, id); assert.equal(result.product.version, 1);
+  const current = (await call('/api/v1/admin/inventory', { user })).inventories.find(value => value.productId === id);
+  assert.ok(current);
+  await call('/api/v1/admin/inventory/' + id, { user, method: 'PUT', body: {
+    expectedVersion: current.version, stocks: { small: 10, family: 10 }, batchCode: `MERCHANT-SMOKE-${suffix}`,
+    harvestDate: new Date().toISOString().slice(0, 10), note: '本机采购者验收专用模拟批次。', reason: '配置本机采购者模拟库存'
+  } });
   return result.product;
 }
 async function createOrder(productId) {
   const items = [{ productId, variant: 'small', quantity: 1 }];
   const { quote } = await post('/orders/quote', { items, address: 'gansu' }, buyer);
-  const input = { items, address: 'gansu', expectedTotal: quote.total, productVersions: quote.productVersions, idempotencyKey: `MERCHANT-SMOKE-${randomUUID()}` };
+  const input = { items, address: 'gansu', expectedTotal: quote.total, productVersions: quote.productVersions, inventoryVersions: quote.inventoryVersions, idempotencyKey: `MERCHANT-SMOKE-${randomUUID()}` };
   const result = await post('/orders', input, buyer, 201);
   assert.equal(result.order.version, 1); assert.equal(result.order.total, quote.total);
   createdOrders.push(result.order.id);

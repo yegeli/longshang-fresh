@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#31553f">
   <title>经营概览 · 陇上鲜集管理后台</title>
-  <link rel="stylesheet" href="./admin.css?v=8">
+  <link rel="stylesheet" href="./admin.css?v=9">
 </head>
 <body>
   <div class="admin-shell">
@@ -15,6 +15,7 @@
       <nav id="admin-nav" class="admin-nav" hidden aria-label="管理栏目">
         <button data-view="overview" class="active">经营概览</button>
         <button data-view="products">商品管理</button>
+        <button data-view="inventory" hidden>库存批次</button>
         <button data-view="orders">订单管理</button>
         <button data-view="aftersales">售后管理</button>
         <button data-view="merchants" hidden>商家账号</button>
@@ -32,6 +33,6 @@
   </div>
   <div id="drawer-root"></div>
   <div id="admin-toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script type="module" src="./admin.js?v=8"></script>
+  <script type="module" src="./admin.js?v=9"></script>
 </body>
 </html>

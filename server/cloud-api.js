@@ -1,6 +1,7 @@
 import { BASE_CATALOG, normalizeCatalogProduct } from '../public/model.js';
 import { handleOrderApi } from './order-api.js';
 import { handleMerchantApi } from './merchant-api.js';
+import { handleInventoryApi } from './inventory-api.js';
 import { MERCHANT_PERMISSIONS, merchantDTO, hasPermission, managementGuard, visibleSellerSQL } from './merchant-access.js';
 
 const PREFIX = '/api/v1';
@@ -333,6 +334,8 @@ export async function handleApi(request, env) {
     }
     const merchantResponse = await handleMerchantApi(request, env, { manager, requireDB, sameOrigin, jsonBody, fail, json, method });
     if (merchantResponse) return merchantResponse;
+    const inventoryResponse = await handleInventoryApi(request, env, { manager, requireDB, sameOrigin, jsonBody, fail, json, method });
+    if (inventoryResponse) return inventoryResponse;
     const orderResponse = await handleOrderApi(request, env, { identity, manager, requireDB, sameOrigin, jsonBody, fail, json, method });
     if (orderResponse) return orderResponse;
     if (path === `${PREFIX}/products`) { method(request, ['GET']); return json(await catalog(requireDB(env))); }
