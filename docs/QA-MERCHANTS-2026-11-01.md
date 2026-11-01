@@ -30,7 +30,15 @@
 
 ## 发布记录
 
-本轮功能验证已完成，托管发布与 GitHub 远端核验结果将在完成后补记。
+2026-11-01 12:20（Asia/Shanghai）成功发布托管版本 **8**：[管理后台](https://jingtai-fresh-demo-1031.merry-brush-7565.chatgpt.site/admin?v=8)。站点仍仅原所有者可访问，未新增外部访问者。
+
+- 功能源码通过命令行推送至 GitHub [`d8f332e`](https://github.com/yegeli/longshang-fresh/commit/d8f332ef39633ba5ad2aca2118d400327b9be4ca)，远端 main 的完整 SHA 已核对一致。[该提交 CI](https://github.com/yegeli/longshang-fresh/actions/runs/41272657010) 的 Node22、Node24检查及云构建／迁移三项任务全部成功。
+- 托管源码提交 `71167eca3b258846accc5a76f51af95880fb47fb`，从同一实现重新构建、打包并发布，保留原私有托管清单。随后只补充文档，不重复部署。
+- Sites 线上数据库概览确认 `merchant_accounts`、`merchant_audit` 已建立，原有用户、商品、素材及订单表保留。
+- 独立 HTTP 核对：公开目录仍返回六款商品；无访客身份的会话为 `user:null`、`permissions:[]`、`canManage:false`；商家管理、后台商品、后台订单接口均拒绝无身份访问（401）。
+- 七份线上文件（`admin.js`、`admin.css`、`merchant-store.js`、`cloud-client.js`、`catalog-store.js`、`media-store.js`、`order-store.js`）与已提交源码逐字节一致。
+
+线上只使用平台提供的服务访问凭据通过私有站点边界，没有伪造访客身份或向生产业务表写入测试记录。没有访客身份时管理入口返回307，本轮未跟随登录跳转。登录后商家创建、修改及完整多账号操作仍需真实入口验收；本机完整流程与生产只读核对分别记录。
 
 ## 验证边界
 
