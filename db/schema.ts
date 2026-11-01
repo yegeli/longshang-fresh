@@ -176,3 +176,25 @@ export const setupOperations = sqliteTable('setup_operations', {
   summaryJson: text('summary_json').notNull(),
   createdAt: text('created_at').notNull()
 }, table => [check('setup_summary_json', sql`json_valid(${table.summaryJson}) and json_type(${table.summaryJson}) = 'object'`)]);
+
+// Provider subjects and login codes are irreversible AppID-scoped hashes. The
+// standalone WeChat API never links these users through unverified email.
+export const wechatIdentities = sqliteTable('wechat_identities', {
+  subjectHash: text('subject_hash').primaryKey(),
+  appId: text('app_id').notNull(),
+  userId: text('user_id').notNull().unique().references(() => users.id),
+  createdAt: text('created_at').notNull()
+});
+export const wechatLoginCodes = sqliteTable('wechat_login_codes', {
+  codeHash: text('code_hash').primaryKey(),
+  requestNonce: text('request_nonce').notNull(),
+  createdAt: text('created_at').notNull()
+});
+export const wechatSessions = sqliteTable('wechat_sessions', {
+  tokenHash: text('token_hash').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  appId: text('app_id').notNull(),
+  createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+  revokedAt: text('revoked_at')
+}, table => [index('wechat_sessions_user').on(table.userId), index('wechat_sessions_expiry').on(table.expiresAt)]);

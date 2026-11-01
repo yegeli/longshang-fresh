@@ -5,6 +5,7 @@ import { handleMerchantApi } from './merchant-api.js';
 import { handleInventoryApi } from './inventory-api.js';
 import { handleStorefrontApi } from './storefront-api.js';
 import { handleDemoInventorySetup } from './demo-inventory-setup.js';
+import { handleWechatAuthApi, wechatIdentity, wechatSessionDTO, wechatWriteOrigin } from './wechat-auth.js';
 import { MERCHANT_PERMISSIONS, merchantDTO, hasPermission, managementGuard, visibleSellerSQL } from './merchant-access.js';
 
 const PREFIX = '/api/v1';
@@ -36,11 +37,12 @@ function requireBucket(env) {
 }
 
 async function identity(request, env) {
+  if (env.AUTH_MODE === 'wechat') return wechatIdentity(request, env, { requireDB, fail });
   // These headers are trusted ONLY behind Sites dispatch, which strips client-supplied values.
   const id = request.headers.get('oai-authenticated-user-id');
   const rawEmail = request.headers.get('oai-authenticated-user-email');
   if (!id || !rawEmail) return null;
-  if (id.startsWith('system:') || id.length > 255 || id !== id.trim() || /[\u0000-\u001f\u007f]/u.test(id)) fail(401, 'identity_invalid', '登录身份无效，请重新登录。');
+  if (id.startsWith('system:') || id.startsWith('wechat:') || id.length > 255 || id !== id.trim() || /[\u0000-\u001f\u007f]/u.test(id)) fail(401, 'identity_invalid', '登录身份无效，请重新登录。');
   const email = rawEmail.trim().toLowerCase();
   if (email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(401, 'identity_invalid', '登录身份无效，请重新登录。');
   const db = requireDB(env), now = isoNow(), name = email.split('@')[0].slice(0, 120);
@@ -88,7 +90,8 @@ async function manager(request, env, adminOnly = false, permissions = MERCHANT_P
   return user;
 }
 
-function sameOrigin(request) {
+function sameOrigin(request, env) {
+  if (env?.AUTH_MODE === 'wechat') return wechatWriteOrigin(request, fail);
   const origin = request.headers.get('Origin');
   if (!origin || origin !== new URL(request.url).origin) fail(403, 'origin_rejected', '写入请求必须来自当前站点。');
 }
@@ -128,9 +131,9 @@ async function limitedBody(request, limit) {
   return bytes;
 }
 
-async function jsonBody(request) {
+async function jsonBody(request, limit = 96 * 1024) {
   contentType(request, 'application/json');
-  const bytes = await limitedBody(request, 96 * 1024);
+  const bytes = await limitedBody(request, limit);
   let value;
   try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
   catch { fail(400, 'json_invalid', 'JSON 请求格式无效。'); }
@@ -182,7 +185,7 @@ async function catalog(db, user = null) {
 }
 
 async function putProduct(request, env, id) {
-  sameOrigin(request);
+  sameOrigin(request, env);
   const user = await manager(request, env, false, 'products'), db = requireDB(env), body = await jsonBody(request);
   rejectUnknown(body, new Set(['product', 'expectedVersion']), '请求');
   const expected = body.expectedVersion;
@@ -212,7 +215,7 @@ async function putProduct(request, env, id) {
 }
 
 async function seed(request, env) {
-  sameOrigin(request);
+  sameOrigin(request, env);
   const user = await manager(request, env, true), db = requireDB(env);
   const body = await jsonBody(request);
   if (Object.keys(body).length) fail(400, 'seed_invalid', '初始化请求只接受空对象。');
@@ -253,7 +256,7 @@ function hasSignature(bytes, type) {
 }
 
 async function upload(request, env, url) {
-  sameOrigin(request);
+  sameOrigin(request, env);
   const user = await manager(request, env, false, 'products'), db = requireDB(env), bucket = requireBucket(env), kind = url.searchParams.get('kind');
   if (!['image', 'video'].includes(kind)) fail(400, 'kind_invalid', '素材类型必须为 image 或 video。');
   const type = contentType(request);
@@ -327,23 +330,28 @@ function method(request, methods) {
   if (!methods.includes(request.method)) fail(405, 'method_not_allowed', '此接口不支持该请求方式。', { Allow: methods.join(', ') });
 }
 
-export async function handleApi(request, env) {
+export async function handleApi(request, env, options = {}) {
   try {
     const url = new URL(request.url), path = url.pathname;
-    const setupResponse = await handleDemoInventorySetup(request, env, { requireDB, sameOrigin, jsonBody, fail, json });
+    const checkOrigin = input => sameOrigin(input, env);
+    const authResponse = await handleWechatAuthApi(request, env, { requireDB, jsonBody, fail, json, method, providerFetch: options.wechatProviderFetch });
+    if (authResponse) return authResponse;
+    // The one-time Sites maintenance operation is not exposed by a public API.
+    const setupResponse = env.AUTH_MODE === 'wechat' ? null : await handleDemoInventorySetup(request, env, { requireDB, sameOrigin: checkOrigin, jsonBody, fail, json });
     if (setupResponse) return setupResponse;
     if (path === `${PREFIX}/session`) {
       method(request, ['GET']);
       const user = await identity(request, env);
+      if (env.AUTH_MODE === 'wechat') return json(wechatSessionDTO(user));
       return json({ user: user ? { id: user.id, email: user.email, name: user.name } : null, role: user?.role || 'anonymous', canManage: !!user?.permissions.length, permissions: user?.permissions || [], merchant: user?.merchant || null, signInUrl: SIGN_IN, signOutUrl: SIGN_OUT });
     }
-    const merchantResponse = await handleMerchantApi(request, env, { manager, requireDB, sameOrigin, jsonBody, fail, json, method });
+    const merchantResponse = await handleMerchantApi(request, env, { manager, requireDB, sameOrigin: checkOrigin, jsonBody, fail, json, method });
     if (merchantResponse) return merchantResponse;
-    const inventoryResponse = await handleInventoryApi(request, env, { manager, requireDB, sameOrigin, jsonBody, fail, json, method });
+    const inventoryResponse = await handleInventoryApi(request, env, { manager, requireDB, sameOrigin: checkOrigin, jsonBody, fail, json, method });
     if (inventoryResponse) return inventoryResponse;
-    const buyerStateResponse = await handleBuyerStateApi(request, env, { identity, requireDB, sameOrigin, jsonBody, fail, json, method });
+    const buyerStateResponse = await handleBuyerStateApi(request, env, { identity, requireDB, sameOrigin: checkOrigin, jsonBody, fail, json, method });
     if (buyerStateResponse) return buyerStateResponse;
-    const orderResponse = await handleOrderApi(request, env, { identity, manager, requireDB, sameOrigin, jsonBody, fail, json, method });
+    const orderResponse = await handleOrderApi(request, env, { identity, manager, requireDB, sameOrigin: checkOrigin, jsonBody, fail, json, method });
     if (orderResponse) return orderResponse;
     const storefrontResponse = await handleStorefrontApi(request, env, { requireDB, json, method });
     if (storefrontResponse) return storefrontResponse;

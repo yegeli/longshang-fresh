@@ -1,0 +1,15 @@
+{
+  // Copy to an ignored local config. Fill your own resource identifiers; these
+  // are not the managed private demo Site's database or bucket credentials.
+  "name": "longshang-fresh-wechat-api",
+  "main": "worker.js",
+  "compatibility_date": "2026-05-15",
+  "workers_dev": true,
+  "vars": {
+    "AUTH_MODE": "wechat",
+    "WECHAT_APP_ID": "wx0000000000000000"
+  },
+  // WECHAT_APP_SECRET is a deployment secret, never a value in this file.
+  "d1_databases": [{ "binding": "DB", "database_name": "longshang-fresh-wechat", "database_id": "REPLACE_WITH_YOUR_DATABASE_ID", "migrations_dir": "../drizzle" }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "replace-with-your-bucket-name" }]
+}

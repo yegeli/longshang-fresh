@@ -1,0 +1,4 @@
+{
+  "desc": "模拟开发版不进入微信搜索索引。",
+  "rules": [{ "action": "disallow", "page": "*" }]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "longshang-wechat-development-tools",
+  "private": true,
+  "description": "Optional official WeChat compiler and upload tooling; no account credentials.",
+  "dependencies": { "miniprogram-ci": "2.1.31" }
+}

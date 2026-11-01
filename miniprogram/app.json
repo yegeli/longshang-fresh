@@ -1,0 +1,31 @@
+{
+  "pages": [
+    "pages/home/index", "pages/regions/index", "pages/region/index",
+    "pages/shops/index", "pages/shop/index", "pages/product/index",
+    "pages/cart/index", "pages/checkout/index", "pages/orders/index",
+    "pages/order/index", "pages/aftersale/index", "pages/mine/index", "pages/guide/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "陇上鲜集",
+    "navigationBarBackgroundColor": "#F6F8F0",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#F6F8F0",
+    "backgroundTextStyle": "dark",
+    "enablePullDownRefresh": true
+  },
+  "tabBar": {
+    "color": "#70796C",
+    "selectedColor": "#2E573E",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "white",
+    "list": [
+      { "pagePath": "pages/home/index", "text": "逛好物" },
+      { "pagePath": "pages/regions/index", "text": "逛产区" },
+      { "pagePath": "pages/cart/index", "text": "购物车" },
+      { "pagePath": "pages/mine/index", "text": "我的" }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

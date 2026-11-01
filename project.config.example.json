@@ -1,0 +1,20 @@
+{
+  "description": "陇上鲜集微信原生小程序；用 npm run wechat:configure 生成本机配置。",
+  "miniprogramRoot": "miniprogram/",
+  "compileType": "miniprogram",
+  "appid": "touristappid",
+  "projectname": "longshang-fresh",
+  "setting": {
+    "urlCheck": true,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true,
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "compileHotReLoad": false,
+    "uploadWithSourceMap": false
+  },
+  "packOptions": { "ignore": [], "include": [] },
+  "editorSetting": { "tabIndent": "insertSpaces", "tabSize": 2 }
+}

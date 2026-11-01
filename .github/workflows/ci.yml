@@ -38,5 +38,8 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run setup:local
+      - run: npm run build:miniprogram
+      - run: npm run check:miniprogram
+      - run: npm run test:wechat:worker
       - run: npm run build
       - run: npm run db:local

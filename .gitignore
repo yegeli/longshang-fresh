@@ -25,3 +25,14 @@ dist/
 outputs/
 public/assets/apple-harvest.mp4
 public/assets/apple-harvest-poster.jpg
+
+# Local WeChat identity, developer-tool state, deployment credentials and output.
+project.config.json
+project.private.config.json
+wechat-worker/wrangler.local.jsonc
+wechat-worker/wrangler.local.json
+*.private.key
+private.*.key
+*.pem
+*.key
+.wechat-local/

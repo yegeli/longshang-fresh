@@ -16,7 +16,13 @@
     "test": "node --test",
     "check": "node scripts/check.mjs",
     "setup:local": "node scripts/setup-local.mjs",
-    "db:local": "node scripts/migrate-local.mjs"
+    "db:local": "node scripts/migrate-local.mjs",
+    "build:miniprogram": "node scripts/build-miniprogram.mjs",
+    "wechat:configure": "node scripts/configure-wechat.mjs",
+    "check:miniprogram": "node scripts/check-miniprogram.mjs",
+    "test:wechat:worker": "node scripts/smoke-wechat-worker-local.mjs",
+    "compile:miniprogram": "node scripts/compile-miniprogram.mjs",
+    "wechat:preview": "node scripts/wechat-preview.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
@@ -54,9 +60,11 @@
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
+    "esbuild": "0.28.0",
     "eslint": "9.39.4",
     "eslint-config-next": "16.3.4",
     "json-rpc-2.0": "1.7.1",
+    "miniflare": "4.20260515.0",
     "raw-body": "3.0.2",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
