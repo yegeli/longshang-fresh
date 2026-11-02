@@ -15,7 +15,7 @@ export async function configureWechat(root, args) {
   try { previous = JSON.parse(await readFile(path, 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (previous?.appid && previous.appid !== 'touristappid' && previous.appid !== appid) throw new Error('An existing AppID is configured. Preserve it or edit the local configuration explicitly.');
-  await writeFile(path, JSON.stringify({ ...example, ...previous, miniprogramRoot: 'miniprogram/', compileType: 'miniprogram', appid }, null, 2) + '\n');
+  await writeFile(path, JSON.stringify({ ...example, ...previous, miniprogramRoot: 'miniprogram/', cloudfunctionRoot: 'cloudfunctions/', compileType: 'miniprogram', appid }, null, 2) + '\n');
   return { path, appid, mode: appid === 'touristappid' ? 'local-development' : 'registered-project', uploaded: false };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

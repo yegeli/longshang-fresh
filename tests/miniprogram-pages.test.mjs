@@ -161,3 +161,51 @@ test('cloud order view never exposes mock merchant actions', () => {
   const after = r.shared.orderView({ id: 'DEMO-X', status: 'created', total: 1, items: [], afterSale: { status: 'submitted' } });
   assert.equal(waiting.canMockShip, false); assert.equal(after.canMockResolve, false);
 });
+
+test('checkout recovery stays with its CloudBase environment and function for the same account', async () => {
+  const r = runtime();
+  r.market.storageNamespace = 'cloudbase:environment-a:market';
+  const checkout = await prepareCheckout(r);
+  const create = r.market.createOrder.bind(r.market);
+  r.market.createOrder = async () => { throw Error('模拟请求未送达'); };
+  await checkout.submit();
+  const keyA = 'longshang-mini-pending:cloudbase:environment-a:market:native-mock-buyer';
+  const stored = r.storage.get(keyA);
+  assert.ok(stored?.payload?.idempotencyKey);
+  r.market.storageNamespace = 'cloudbase:environment-b:market';
+  const environmentB = await open(r, 'checkout');
+  assert.equal(environmentB.data.hasPending, false);
+  assert.equal(environmentB._pending, null);
+  r.market.storageNamespace = 'cloudbase:environment-a:another-function';
+  assert.equal((await open(r, 'checkout')).data.hasPending, false);
+  r.market.storageNamespace = 'cloudbase:environment-a:market';
+  const resumed = await open(r, 'checkout');
+  assert.equal(resumed.data.hasPending, true);
+  assert.equal(resumed._pending.payload.idempotencyKey, stored.payload.idempotencyKey);
+  r.market.createOrder = create;
+  await resumed.submit();
+  assert.equal(resumed.data.error, '');
+  assert.equal((await r.market.listOrders()).orders.length, 1);
+});
+
+test('order cleanup removes only current environment recovery markers and leaves another environment intact', async () => {
+  const r = runtime();
+  r.market.storageNamespace = 'cloudbase:environment-a:market';
+  const checkout = await prepareCheckout(r); await checkout.submit();
+  const order = (await r.market.listOrders()).orders[0];
+  const account = 'native-mock-buyer';
+  const namespaceA = 'cloudbase:environment-a:market:' + account;
+  const namespaceB = 'cloudbase:environment-b:market:' + account;
+  const marker = { accountId: account, confirmedOrderId: order.id };
+  for (const namespace of [namespaceA, namespaceB]) {
+    r.storage.set('longshang-mini-cleanup:' + namespace, [order.id]);
+    r.storage.set('longshang-mini-pending:' + namespace, clone(marker));
+  }
+  const detail = await open(r, 'order', { id: order.id });
+  assert.equal(detail.data.cartPending, true);
+  await detail.retryCart();
+  assert.equal(r.storage.has('longshang-mini-pending:' + namespaceA), false);
+  assert.deepEqual(r.storage.get('longshang-mini-cleanup:' + namespaceA), []);
+  assert.deepEqual(r.storage.get('longshang-mini-pending:' + namespaceB), marker);
+  assert.deepEqual(r.storage.get('longshang-mini-cleanup:' + namespaceB), [order.id]);
+});

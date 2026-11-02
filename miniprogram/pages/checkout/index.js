@@ -1,6 +1,7 @@
 const { market, page, money, image, confirm, toast } = require('../_shared');
 function keys(id) {
-  return { pending: 'longshang-mini-pending:' + market.mode + ':' + id, cleanup: 'longshang-mini-cleanup:' + market.mode + ':' + id };
+  const namespace = market.storageNamespace || market.mode;
+  return { pending: 'longshang-mini-pending:' + namespace + ':' + id, cleanup: 'longshang-mini-cleanup:' + namespace + ':' + id };
 }
 function viewQuote(quote) {
   return { ...quote, subtotalText: money(quote.subtotal), shippingText: money(quote.shipping), totalText: money(quote.total),

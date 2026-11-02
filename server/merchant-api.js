@@ -7,6 +7,9 @@ const uuid = prefix => `${prefix}-${crypto.randomUUID().toUpperCase()}`;
 export async function handleMerchantApi(request, env, helpers) {
   const path = new URL(request.url).pathname;
   if (path !== BASE && !path.startsWith(`${BASE}/`)) return null;
+  // A verified WeChat subject has no verified email invitation to claim.
+  // Its operator authorizations use the separate explicit-account API.
+  if (env.AUTH_MODE === 'wechat') helpers.fail(404, 'not_found', '请使用微信采购者账号管理入口。');
   const { manager, requireDB, fail, json, jsonBody, sameOrigin, method } = helpers;
   const user = await manager(request, env, true), db = requireDB(env);
   const get = async id => {

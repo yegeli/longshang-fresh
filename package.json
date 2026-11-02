@@ -22,7 +22,10 @@
     "check:miniprogram": "node scripts/check-miniprogram.mjs",
     "test:wechat:worker": "node scripts/smoke-wechat-worker-local.mjs",
     "compile:miniprogram": "node scripts/compile-miniprogram.mjs",
-    "wechat:preview": "node scripts/wechat-preview.mjs"
+    "wechat:preview": "node scripts/wechat-preview.mjs",
+    "wechat:bootstrap-admin": "node scripts/bootstrap-wechat-admin.mjs",
+    "build:cloudbase": "node cloudfunctions/market/build.mjs",
+    "prepare:cloudbase": "node scripts/prepare-cloudbase.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

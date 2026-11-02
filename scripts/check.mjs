@@ -12,6 +12,7 @@ if (Number(process.versions.node.split('.')[0]) < 22) {
 async function sourceFiles(directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) files.push(...await sourceFiles(path));
     else if (entry.isFile() && /\.(?:js|mjs|cjs)$/.test(entry.name)) files.push(path);
@@ -28,7 +29,7 @@ function run(args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-const groups = await Promise.all(['public', 'scripts', 'tests', 'server', 'miniprogram', 'wechat-worker'].map(directory => sourceFiles(resolve(root, directory))));
+const groups = await Promise.all(['public', 'scripts', 'tests', 'server', 'miniprogram', 'wechat-worker', 'cloudfunctions'].map(directory => sourceFiles(resolve(root, directory))));
 const files = groups.flat();
 for (const file of files) run(['--check', file]);
 console.log(`Syntax checked ${files.length} source/test files.`);

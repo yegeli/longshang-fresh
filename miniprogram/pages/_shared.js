@@ -1,6 +1,6 @@
 const { getMarket } = require('../services/market');
 const market = getMarket();
-const routes = ['home','regions','region','shops','shop','product','cart','checkout','orders','order','aftersale','mine','guide'];
+const routes = ['home','regions','region','shops','shop','product','cart','checkout','orders','order','aftersale','mine','guide','workbench','manage-product','merchants'];
 const tabs = ['home','regions','cart','mine'];
 const money = value => (Number(value || 0) / 100).toFixed(2);
 const image = value => market.assetUrl(value || 'assets/apples.jpg');

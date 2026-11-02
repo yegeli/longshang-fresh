@@ -3,7 +3,8 @@
     "pages/home/index", "pages/regions/index", "pages/region/index",
     "pages/shops/index", "pages/shop/index", "pages/product/index",
     "pages/cart/index", "pages/checkout/index", "pages/orders/index",
-    "pages/order/index", "pages/aftersale/index", "pages/mine/index", "pages/guide/index"
+    "pages/order/index", "pages/aftersale/index", "pages/mine/index", "pages/guide/index",
+    "pages/workbench/index", "pages/manage-product/index", "pages/merchants/index"
   ],
   "window": {
     "navigationBarTitleText": "陇上鲜集",

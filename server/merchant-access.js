@@ -1,8 +1,10 @@
 export const MERCHANT_PERMISSIONS = ['products', 'orders', 'aftersales'];
 
 export function merchantDTO(row) {
-  return { id: row.id, name: row.name, email: row.email, region: row.region, status: row.status,
-    permissions: JSON.parse(row.permissions_json), version: row.version, createdAt: row.created_at, updatedAt: row.updated_at, bound: !!row.user_id };
+  const wechat = /^wechat:[a-f0-9]{64}$/.test(row.user_id || '');
+  return { id: row.id, name: row.name, email: wechat ? '' : row.email, region: row.region, status: row.status,
+    permissions: JSON.parse(row.permissions_json), version: row.version, createdAt: row.created_at, updatedAt: row.updated_at, bound: !!row.user_id,
+    ...(wechat ? { userId: row.user_id, authProvider: 'wechat' } : {}) };
 }
 
 export function hasPermission(user, permission) {

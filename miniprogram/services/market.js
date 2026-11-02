@@ -19,6 +19,14 @@ function validOrigin(value) {
     || /^https:\/\/(?:localhost|127\.|0\.|\[)/i.test(value)) fail('api_config_invalid', '请配置独立微信 API 的 HTTPS 根地址，不能使用网页演示站点。');
   return value.replace(/\/$/, '').replace(/:443$/, '');
 }
+function cloudbaseSettings(config, wxApi) {
+  if (typeof config.cloudEnv !== 'string' || !/^[a-z0-9][a-z0-9_-]{2,79}$/i.test(config.cloudEnv)
+    || /^(?:your[-_]|replace[-_]|example|env[-_]id)/i.test(config.cloudEnv)) fail('cloud_config_invalid', '请先配置实际微信云开发环境编号。');
+  const name = config.cloudFunction === undefined ? 'market' : config.cloudFunction;
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9_-]{0,59}$/i.test(name)) fail('cloud_config_invalid', '云函数名称无效，请核对部署配置。');
+  if (!wxApi.cloud || typeof wxApi.cloud.init !== 'function' || typeof wxApi.cloud.callFunction !== 'function') fail('cloud_runtime_missing', '当前微信环境不支持云开发，请升级微信后重试。');
+  return { env: config.cloudEnv, name };
+}
 function validateShopping(value) {
   if (!object(value) || Object.keys(value).length !== 4 || !['cart','favorites','recent','preferredAddress'].every(key => Object.prototype.hasOwnProperty.call(value, key))
     || !model.ADDRESSES.some(item => item.id === value.preferredAddress) || !Array.isArray(value.cart) || value.cart.length > 12) fail('shopping_invalid', '购物资料格式无效。');
@@ -40,17 +48,28 @@ function createMarket(wxApi, settings) {
   const config = { ...defaultConfig, ...settings };
   if (!['mock','cloud'].includes(config.mode)) fail('mode_invalid', '请选择明确的模拟或云端运行模式。');
   if (!wxApi || typeof wxApi.getStorageSync !== 'function' || typeof wxApi.setStorageSync !== 'function') fail('runtime_missing', '请在微信小程序中运行。');
-  const cloud = config.mode === 'cloud', origin = cloud ? validOrigin(config.apiBase) : '';
-  const authKey = cloud ? 'longshang-native-auth:' + origin : '';
+  const cloud = config.mode === 'cloud', cloudbase = cloud && config.transport === 'cloudbase';
+  if (cloud && config.transport !== undefined && !['http','cloudbase'].includes(config.transport)) fail('transport_invalid', '云端连接方式无效，请核对部署配置。');
+  const origin = cloud && !cloudbase ? validOrigin(config.apiBase) : '';
+  const target = cloudbase ? cloudbaseSettings(config, wxApi) : null;
+  const storageNamespace = cloudbase ? 'cloudbase:' + target.env + ':' + target.name : config.mode;
+  const authKey = cloud ? 'longshang-native-auth:' + (cloudbase ? storageNamespace : origin) : '';
+  let cloudReady = Promise.resolve(null);
+  if (cloudbase) {
+    try {
+      cloudReady = Promise.resolve(wxApi.cloud.init({ env: target.env })).then(() => null, () => error('cloud_init_failed', '云开发环境初始化失败，请核对环境编号和授权后重试。'));
+    } catch (_) { fail('cloud_init_failed', '云开发环境初始化失败，请核对环境编号和授权后重试。'); }
+  }
   let generation = 0, auth = null, loginFlight = null;
   if (cloud) {
     const stored = wxApi.getStorageSync(authKey);
     if (object(stored) && typeof stored.token === 'string' && /^wxs_[a-f0-9]{64}$/.test(stored.token)
-      && typeof stored.expiresAt === 'string' && Date.parse(stored.expiresAt) > Date.now()) auth = clone(stored);
+      && typeof stored.expiresAt === 'string' && Date.parse(stored.expiresAt) > Date.now()
+      && (!cloudbase || /^wechat:[a-f0-9]{64}$/.test(stored.userId || ''))) auth = clone(stored);
     else if (stored !== undefined && stored !== null && stored !== '') wxApi.removeStorageSync(authKey);
   }
   const clearAuth = () => {
-    auth = null; generation++;
+    auth = null; generation++; loginFlight = null;
     // A storage failure must not interrupt a 401 callback and leave its Promise
     // pending. Expired/revoked server sessions stay unusable if local removal fails.
     try { wxApi.removeStorageSync(authKey); } catch (_) { /* Runtime identity is already cleared. */ }
@@ -66,6 +85,51 @@ function createMarket(wxApi, settings) {
     const cursor = options && options.cursor;
     if (cursor !== undefined && !/^[A-Za-z0-9_-]{1,220}$/.test(cursor)) return Promise.reject(error('cursor_invalid', '订单分页资料无效。'));
     const revision = generation, token = auth && auth.token;
+    if (cloudbase) return new Promise((resolve, reject) => {
+      let settled = false, timer;
+      const finish = (failure, value) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        if (revision !== generation) return reject(error('stale_session', '账号已切换，请重新读取。'));
+        if (failure) return reject(failure);
+        resolve(value);
+      };
+      const success = response => {
+        if (settled) return;
+        const result = response && response.result;
+        if (!object(result) || !Number.isInteger(result.status) || result.status < 100 || result.status > 599 || !object(result.body)) return finish(error('response_invalid', '云函数响应格式无效，请核对云端部署版本。'));
+        if (result.status < 200 || result.status >= 300) {
+          const remote = object(result.body.error) ? result.body.error : {};
+          const failure = error(typeof remote.code === 'string' ? remote.code : 'request_failed', typeof remote.message === 'string' ? remote.message : '云端请求失败，请稍后重试。', result.status);
+          if (revision === generation && token && auth && auth.token === token && (result.status === 401 || failure.code === 'account_changed')) {
+            // Preserve this rejection's server error while invalidating all
+            // other old-account callbacks and the persistent local session.
+            settled = true; clearTimeout(timer); clearAuth(); return reject(failure);
+          }
+          return finish(failure);
+        }
+        if (path === '/api/v1/session' && auth && (!result.body.user || result.body.user.id !== auth.userId)) {
+          if (revision !== generation) return finish(error('stale_session', '账号已切换，请重新读取。'));
+          settled = true; clearTimeout(timer); clearAuth();
+          return reject(error('account_changed', '微信账号已变化或登录已失效，请重新登录。', 401));
+        }
+        finish(null, result.body);
+      };
+      cloudReady.then(initializationError => {
+        if (initializationError) return finish(initializationError);
+        if (revision !== generation) return finish(error('stale_session', '账号已切换，请重新读取。'));
+        timer = setTimeout(() => finish(error('network_error', '云函数连接未确认完成，请稍后核对并重试；不会切回本机模拟。')), Math.min(30000, Math.max(1000, config.requestTimeout || 15000)));
+        const event = { path: path + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), method: method || 'GET', ...(data === undefined ? {} : { body: data }),
+          ...(!publicRequest && token ? { sessionToken: token, expectedUserId: auth.userId } : {}) };
+        try {
+          const pending = wxApi.cloud.callFunction({ name: target.name, config: { env: target.env }, data: event,
+            success, fail: () => finish(error('network_error', '云函数连接失败，请核对环境、部署和网络后重试；不会切回本机模拟。')) });
+          // Support both callback and Promise forms of the official SDK. A
+          // second completion is ignored rather than mutating session state.
+          if (pending && typeof pending.then === 'function') pending.then(value => { if (value !== undefined) success(value); }, () => finish(error('network_error', '云函数连接失败，请核对环境、部署和网络后重试；不会切回本机模拟。')));
+        } catch (_) { finish(error('network_error', '云函数调用未完成，请核对部署后重试；不会切回本机模拟。')); }
+      });
+    });
     return new Promise((resolve, reject) => {
       wxApi.request({ url: origin + path + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), method: method || 'GET', data,
         header: { Accept: 'application/json', ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
@@ -157,8 +221,21 @@ function createMarket(wxApi, settings) {
       return { order: record.order };
     });
   }
+  async function management(permission, path, method, data, accountId) {
+    if (!cloud) fail('cloud_only', '商家工作台需要已部署的云端服务，本机模拟不会授予管理权限。', 403);
+    const revision = generation;
+    const session = await market.getSession();
+    if (revision !== generation) fail('stale_session', '账号已切换，请重新读取后操作。', 409);
+    if (!session.user) fail('sign_in_required', '请先使用微信登录。', 401);
+    if (method && method !== 'GET' && (!accountId || session.user.id !== accountId)) fail('stale_session', '账号已切换，请重新读取后操作。', 409);
+    const permissions = Array.isArray(permission) ? permission : [permission];
+    if (permission === 'admin' ? session.role !== 'admin' : session.role !== 'admin' && !(session.role === 'merchant' && permissions.some(value => (session.permissions || []).includes(value)))) fail('forbidden', '此账户没有所需管理权限。', 403);
+    return request(path, method, data);
+  }
   const market = {
     mode: config.mode,
+    transport: cloudbase ? 'cloudbase' : cloud ? 'http' : 'mock',
+    storageNamespace,
     addresses: clone(model.ADDRESSES),
     getAddresses: () => clone(model.ADDRESSES), money: model.money, newRequestKey: () => 'NATIVE-' + uuid(),
     assetUrl(path) {
@@ -167,8 +244,8 @@ function createMarket(wxApi, settings) {
         const name = path.split('/').pop();
         return '/assets/' + (['apples.jpg','goji.jpg','pear.jpg','potato.jpg','corn.jpg','onion.jpg'].includes(name) ? name : 'apples.jpg');
       }
-      if (cloud && /^\/api\/v1\/media\/CLOUD-[a-f0-9-]{36}$/i.test(path)) return origin + path;
-      if (cloud && path.startsWith(origin + '/api/v1/media/') && /^CLOUD-[a-f0-9-]{36}$/i.test(path.slice((origin + '/api/v1/media/').length))) return path;
+      if (cloud && !cloudbase && /^\/api\/v1\/media\/CLOUD-[a-f0-9-]{36}$/i.test(path)) return origin + path;
+      if (cloud && !cloudbase && path.startsWith(origin + '/api/v1/media/') && /^CLOUD-[a-f0-9-]{36}$/i.test(path.slice((origin + '/api/v1/media/').length))) return path;
       return '';
     },
     imageFor(product) { return cloud && product && product.imageMediaId ? this.assetUrl('/api/v1/media/' + product.imageMediaId) : this.assetUrl(product && product.image); },
@@ -185,29 +262,33 @@ function createMarket(wxApi, settings) {
     },
     async getSession() {
       if (!cloud) return { user: { id: 'native-mock-buyer', name: '模拟体验用户', email: '' }, role: 'buyer', canManage: false, permissions: [], merchant: null, authProvider: 'mock' };
-      if (!hasAuth()) return { user: null, role: 'anonymous', permissions: [], canManage: false, merchant: null, authProvider: 'wechat' };
+      if (!hasAuth()) return { user: null, role: 'anonymous', permissions: [], canManage: false, merchant: null, authProvider: cloudbase ? 'cloudbase' : 'wechat' };
       return request('/api/v1/session');
     },
     async login() {
       if (!cloud) return { session: await market.getSession(), expiresAt: null };
       if (loginFlight) return loginFlight;
       generation++; const revision = generation; auth = null; wxApi.removeStorageSync(authKey);
-      loginFlight = new Promise((resolve, reject) => wxApi.login({ timeout: 10000, success: result => result.code ? resolve(result.code) : reject(error('login_failed', '微信登录未完成，请重试。')), fail: () => reject(error('login_failed', '微信登录未完成，请重试。')) }))
-        .then(code => request('/api/v1/auth/wechat/login', 'POST', { code }, { public: true })).then(result => {
+      const flight = (cloudbase ? request('/api/v1/auth/wechat/login', 'POST', {}, { public: true })
+        : new Promise((resolve, reject) => wxApi.login({ timeout: 10000, success: result => result.code ? resolve(result.code) : reject(error('login_failed', '微信登录未完成，请重试。')), fail: () => reject(error('login_failed', '微信登录未完成，请重试。')) }))
+          .then(code => request('/api/v1/auth/wechat/login', 'POST', { code }, { public: true }))).then(result => {
           if (revision !== generation) fail('stale_session', '登录已取消，请重试。');
           if (!/^wxs_[a-f0-9]{64}$/.test(result.token || '') || !Number.isFinite(Date.parse(result.expiresAt)) || Date.parse(result.expiresAt) <= Date.now() || !result.session || !result.session.user) fail('response_invalid', '登录响应格式无效。');
-          const next = { token: result.token, expiresAt: result.expiresAt };
+          if (cloudbase && !/^wechat:[a-f0-9]{64}$/.test(result.session.user.id || '')) fail('response_invalid', '云函数登录账号格式无效。');
+          const next = { token: result.token, expiresAt: result.expiresAt, ...(cloudbase ? { userId: result.session.user.id } : {}) };
           wxApi.setStorageSync(authKey, next); auth = next;
           return { session: result.session, expiresAt: result.expiresAt };
-        }).finally(() => { loginFlight = null; });
-      return loginFlight;
+        }).finally(() => { if (loginFlight === flight) loginFlight = null; });
+      loginFlight = flight;
+      return flight;
     },
     async logout() {
       if (!cloud) return;
       if (hasAuth()) {
         const revision = generation;
-        await request('/api/v1/auth/wechat/logout', 'POST', {});
-        if (generation === revision) clearAuth();
+        try { await request('/api/v1/auth/wechat/logout', 'POST', {}); }
+        finally { if (cloudbase && generation === revision) clearAuth(); }
+        if (!cloudbase && generation === revision) clearAuth();
       } else clearAuth();
     },
     async getShopping() { return cloud ? request('/api/v1/me/shopping') : readMock().shopping; },
@@ -267,6 +348,36 @@ function createMarket(wxApi, settings) {
     async withdrawAfterSale(id, expectedVersion) { return cloud ? request('/api/v1/orders/' + encodeURIComponent(id) + '/aftersale/withdraw', 'POST', { expectedVersion }) : mutation(id, expectedVersion, 'withdraw'); },
     async mockShipOrder(id, expectedVersion) { if (cloud) fail('mock_only', '云端订单需要有权限的商家在后台发货。', 403); return mutation(id, expectedVersion, 'ship'); },
     async mockResolveAfterSale(id, expectedVersion, reply) { if (cloud) fail('mock_only', '云端售后需要有权限的商家在后台处理。', 403); return mutation(id, expectedVersion, 'resolve', reply); },
+    async getManagementProducts() { return management('products', '/api/v1/admin/products'); },
+    async getManagementInventory() { return management('products', '/api/v1/admin/inventory'); },
+    async saveManagementProduct(product, expectedVersion, accountId) { return management('products', '/api/v1/admin/products/' + encodeURIComponent(product.id), 'PUT', { product, expectedVersion }, accountId); },
+    async saveManagementInventory(id, input, accountId) { return management('products', '/api/v1/admin/inventory/' + encodeURIComponent(id), 'PUT', input, accountId); },
+    async listManagementOrders() {
+      if (!cloud) fail('cloud_only', '商家工作台需要云端服务。', 403);
+      const revision = generation;
+      const session = await market.getSession();
+      if (revision !== generation) fail('stale_session', '账号已切换，请重新读取。', 409);
+      if (!session.user || session.role !== 'admin' && !(session.role === 'merchant' && (session.permissions || []).some(value => ['orders','aftersales'].includes(value)))) fail('forbidden', '此账户没有订单或售后管理权限。', 403);
+      const orders = [], cursors = new Set(), ids = new Set(); let cursor;
+      for (let page = 0; page < 100; page++) {
+        if (revision !== generation) fail('stale_session', '账号已切换，请重新读取。', 409);
+        const result = await request('/api/v1/admin/orders', 'GET', undefined, cursor ? { cursor } : undefined);
+        if (revision !== generation) fail('stale_session', '账号已切换，请重新读取。', 409);
+        if (!Array.isArray(result.orders)) fail('response_invalid', '订单列表格式无效。');
+        for (const order of result.orders) {
+          if (!order || typeof order.id !== 'string' || ids.has(order.id)) fail('response_invalid', '订单列表重复，请重新读取。');
+          ids.add(order.id); orders.push(order);
+        }
+        if (!result.nextCursor) return { orders, nextCursor: null };
+        if (cursors.has(result.nextCursor)) fail('cursor_invalid', '订单分页重复，请重新读取。');
+        cursors.add(result.nextCursor); cursor = result.nextCursor;
+      }
+      fail('pagination_limit', '订单历史过多，请联系管理员。');
+    },
+    async shipManagementOrder(id, input, accountId) { return management('orders', '/api/v1/admin/orders/' + encodeURIComponent(id) + '/ship', 'POST', input, accountId); },
+    async resolveManagementAfterSale(id, input, accountId) { return management('aftersales', '/api/v1/admin/orders/' + encodeURIComponent(id) + '/aftersale/resolve', 'POST', input, accountId); },
+    async listWechatMerchants() { return management('admin', '/api/v1/admin/wechat/merchants'); },
+    async saveWechatMerchant(input, id, accountId) { return management('admin', '/api/v1/admin/wechat/merchants' + (id ? '/' + encodeURIComponent(id) : ''), id ? 'PUT' : 'POST', input, accountId); },
     async consumeOrder(orderId, expectedVersion) {
       if (cloud) return request('/api/v1/me/shopping/consume-order', 'POST', { orderId, expectedVersion });
       return mutateMock(state => {

@@ -15,6 +15,7 @@ test('local WeChat project configuration accepts only AppID and preserves existi
   const saved = JSON.parse(await readFile(join(root,'project.config.json'),'utf8'));
   assert.equal(saved.appid, 'wx1234567890abcdef');
   assert.equal(saved.miniprogramRoot, 'miniprogram/');
+  assert.equal(saved.cloudfunctionRoot, 'cloudfunctions/');
   assert.equal(saved.setting.urlCheck, true);
   await configureWechat(root, ['--appid','wx1234567890abcdef']);
   await assert.rejects(configureWechat(root, []), /existing AppID/);

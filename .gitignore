@@ -36,3 +36,4 @@ private.*.key
 *.pem
 *.key
 .wechat-local/
+cloudfunctions/**/runtime.config.json

@@ -2,6 +2,7 @@ import { BASE_CATALOG, normalizeCatalogProduct } from '../public/model.js';
 import { handleOrderApi } from './order-api.js';
 import { handleBuyerStateApi } from './buyer-state-api.js';
 import { handleMerchantApi } from './merchant-api.js';
+import { handleWechatOperators } from './wechat-operators.js';
 import { handleInventoryApi } from './inventory-api.js';
 import { handleStorefrontApi } from './storefront-api.js';
 import { handleDemoInventorySetup } from './demo-inventory-setup.js';
@@ -345,6 +346,8 @@ export async function handleApi(request, env, options = {}) {
       if (env.AUTH_MODE === 'wechat') return json(wechatSessionDTO(user));
       return json({ user: user ? { id: user.id, email: user.email, name: user.name } : null, role: user?.role || 'anonymous', canManage: !!user?.permissions.length, permissions: user?.permissions || [], merchant: user?.merchant || null, signInUrl: SIGN_IN, signOutUrl: SIGN_OUT });
     }
+    const wechatOperatorResponse = await handleWechatOperators(request, env, { manager, requireDB, sameOrigin: checkOrigin, jsonBody, fail, json, method });
+    if (wechatOperatorResponse) return wechatOperatorResponse;
     const merchantResponse = await handleMerchantApi(request, env, { manager, requireDB, sameOrigin: checkOrigin, jsonBody, fail, json, method });
     if (merchantResponse) return merchantResponse;
     const inventoryResponse = await handleInventoryApi(request, env, { manager, requireDB, sameOrigin: checkOrigin, jsonBody, fail, json, method });

@@ -1,0 +1,21 @@
+{
+  "description": "Only create these new project-specific collections. Every collection must deny ALL client reads and writes before storing any data. Never modify unrelated collections.",
+  "clientRules": { "read": false, "write": false },
+  "collections": [
+    "lsf_users", "lsf_sessions", "lsf_products", "lsf_inventory",
+    "lsf_orders", "lsf_order_requests", "lsf_shopping", "lsf_order_consumptions",
+    "lsf_merchants", "lsf_merchant_ids", "lsf_merchant_audit", "lsf_inventory_events", "lsf_meta"
+  ],
+  "indexes": [
+    {"collection":"lsf_products","fields":[["sortKey","desc"]]},
+    {"collection":"lsf_products","fields":[["status","asc"],["sortKey","desc"]]},
+    {"collection":"lsf_products","fields":[["ownerId","asc"],["sortKey","desc"]]},
+    {"collection":"lsf_orders","fields":[["sortKey","desc"]]},
+    {"collection":"lsf_orders","fields":[["buyerId","asc"],["sortKey","desc"]]},
+    {"collection":"lsf_orders","fields":[["sellerId","asc"],["sortKey","desc"]]},
+    {"collection":"lsf_orders","fields":[["sellerId","asc"],["hasAftersale","asc"],["sortKey","desc"]]},
+    {"collection":"lsf_merchants","fields":[["sortKey","desc"]]},
+    {"collection":"lsf_merchant_audit","fields":[["merchantId","asc"],["sortKey","desc"]]},
+    {"collection":"lsf_inventory_events","fields":[["productId","asc"],["sortKey","desc"]]}
+  ]
+}

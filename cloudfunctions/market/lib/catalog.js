@@ -1,0 +1,35 @@
+'use strict';
+const {fail,digest}=require('./store');
+const {BASE_CATALOG}=require('./model.cjs');
+const {buildStorefront}=require('./storefront.cjs');
+const C=require('./common');
+function createCatalog({store,auth,now}) {
+ async function visibleCatalog(docs,appId) {const rows=await C.allProducts(docs,{status:'published'}),cache=new Map(),visible=[];for(const row of rows){if(!cache.has(row.ownerId))cache.set(row.ownerId,await C.sellerVisible(docs,row.ownerId,appId));if(cache.get(row.ownerId))visible.push(row);}return visible;}
+ async function handle(ctx) {
+  const {path,method,body,event,caller,url}=ctx;
+  if(path==='/products'||path==='/storefront'||path==='/inventory') {
+   C.requireMethod(method,'GET');const rows=await visibleCatalog(store,caller.appId),updatedAt=rows.reduce((v,r)=>r.updatedAt>v?r.updatedAt:v,'')||null;
+   if(path==='/products')return {products:rows.map(C.productDTO),updatedAt};
+   if(path==='/inventory'){const inventories=[];for(const row of rows)inventories.push(C.inventoryDTO(await store.get('inventory',row.id),row.id));return {inventories,updatedAt};}
+   const definitions=[];for(const id of [...new Set(rows.map(r=>r.ownerId))]){const u=await store.get('users',id),m=u?.merchantId?await store.get('merchants',id):null;definitions.push({id:'shop-'+digest(id).slice(0,24),name:m?.name||'景泰采购演示店',procurementName:m?.name||'平台采购者（模拟）',regionLabel:m?.region||'甘肃 · 景泰',description:'模拟采购者资料。商品货源、价格与履约均用于开发验证。'});}return buildStorefront(rows.map(C.productDTO),definitions,updatedAt);
+  }
+  if(!path.startsWith('/admin/products')&&!path.startsWith('/admin/inventory')&&path!=='/admin/seed')return null;
+  const user=await auth.identity(store,event,caller);C.requirePermission(user,'products');
+  if(path==='/admin/products') {C.requireMethod(method,'GET');const rows=await C.allProducts(store,user.role==='admin'?{}:{ownerId:user.id});return {products:rows.map(C.productDTO),updatedAt:now()};}
+  if(path==='/admin/inventory') {C.requireMethod(method,'GET');const rows=await C.allProducts(store,user.role==='admin'?{}:{ownerId:user.id}),inventories=[];for(const row of rows)inventories.push(C.inventoryDTO(await store.get('inventory',row.id),row.id));return {inventories,updatedAt:now()};}
+  if(path==='/admin/seed') {
+   C.requireMethod(method,'POST');C.V.fields(body,[]);if(user.role!=='admin')fail(403,'forbidden','只有平台管理员可初始化模拟资料。');
+   const time=now(),batchId=C.uuid('BATCH');const result=await store.transaction(async tx=>{const current=await auth.identity(tx,event,caller,true,true);if(current.role!=='admin')fail(403,'forbidden','只有管理员可初始化。');const count=await tx.get('meta','product-count');let inserted=0;
+    for(const template of BASE_CATALOG){const existing=await tx.get('products',template.id),inventory=await tx.get('inventory',template.id),ever=await tx.get('meta','product-ever:'+template.id),stockEver=await tx.get('meta','inventory-ever:'+template.id);if(existing||inventory||ever||stockEver)continue;if((count?.count||0)+inserted>=200)fail(422,'catalog_limit','演示云环境最多保存200款商品。');const product={...C.clone(template),status:'published',video:''};await tx.set('products',template.id,{id:template.id,ownerId:current.id,product,status:'published',version:1,createdAt:time,updatedAt:time,sortKey:time+'|'+template.id});await tx.set('meta','product-ever:'+template.id,{productId:template.id,createdAt:time});const after={productId:template.id,stocks:{small:20,family:12},batchId,batchCode:'DEMO-INITIAL',harvestDate:'',note:'首次初始化模拟库存，非真实货源',version:1,updatedAt:time,updatedBy:current.id};await tx.set('inventory',template.id,after);await C.inventoryEvent(tx,null,after,current.id,'initialized','管理员显式初始化全新模拟商品20/12份',time);inserted++;}
+    if(inserted)await tx.set('meta','product-count',{count:(count?.count||0)+inserted});return inserted;});const products=await C.allProducts(store);return {inserted:result,products:products.map(C.productDTO),updatedAt:time};
+  }
+  const match=/^\/admin\/(products|inventory)\/([^/]+)(?:\/(history))?$/.exec(path);if(!match||!C.V.PRODUCT_ID.test(match[2]))fail(404,'not_found','商品接口不存在。');const [,kind,id,history]=match;
+  if(history){C.requireMethod(method,'GET');if(kind!=='inventory')fail(404,'not_found','接口不存在。');C.ownProduct(await store.get('products',id),user);const result=await C.page(store,'inventoryEvents',{productId:id},C.decodeCursor(url.searchParams.get('cursor')));return {events:result.rows.map(({actorId,sortKey,...event})=>event),nextCursor:result.nextCursor};}
+  if(method==='GET'){const row=C.ownProduct(await store.get('products',id),user);return kind==='products'?{product:C.productDTO(row),version:row.version}:{inventory:C.inventoryDTO(await store.get('inventory',id),id)};}
+  C.requireMethod(method,'PUT');const time=now();
+  if(kind==='products') {C.V.fields(body,['expectedVersion','product']);const expected=C.V.version(body.expectedVersion),product=C.V.product(body.product,id);if(body.product.version!==undefined&&body.product.version!==expected)fail(400,'version_invalid','商品版本与预期版本不一致。');return store.transaction(async tx=>{const current=await auth.identity(tx,event,caller,true,true);C.requirePermission(current,'products');const previous=await tx.get('products',id);if(previous)C.ownProduct(previous,current);C.sameVersion(previous,expected);if(!previous){const count=await tx.get('meta','product-count');if((count?.count||0)>=200)fail(422,'catalog_limit','演示云环境最多保存200款商品。');await tx.set('meta','product-count',{count:(count?.count||0)+1});await tx.set('meta','product-ever:'+id,{productId:id,createdAt:time});}const row={id,ownerId:previous?.ownerId||current.id,product,status:product.status,version:expected+1,createdAt:previous?.createdAt||time,updatedAt:time,sortKey:previous?.sortKey||time+'|'+id};await tx.set('products',id,row);return {product:C.productDTO(row),version:row.version};});}
+  const input=C.V.stock(body),batchId=C.uuid('BATCH');return store.transaction(async tx=>{const current=await auth.identity(tx,event,caller,true,true);C.ownProduct(await tx.get('products',id),current);const before=await tx.get('inventory',id);C.sameVersion(before,input.expectedVersion);const sameBatch=before&&before.batchCode===input.batchCode&&before.harvestDate===input.harvestDate;const after={productId:id,stocks:input.stocks,batchId:sameBatch?before.batchId:batchId,batchCode:input.batchCode,harvestDate:input.harvestDate,note:input.note,version:input.expectedVersion+1,updatedAt:time,updatedBy:current.id};await tx.set('inventory',id,after);await C.inventoryEvent(tx,before,after,current.id,'adjusted',input.reason,time);return {inventory:C.inventoryDTO(after,id)};});
+ }
+ return {handle,visibleCatalog};
+}
+module.exports={createCatalog};
