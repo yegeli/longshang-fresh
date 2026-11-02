@@ -4,6 +4,10 @@
   "private": true,
   "main": "index.js",
   "type": "commonjs",
-  "engines": { "node": ">=18" },
-  "dependencies": { "wx-server-sdk": "4.0.2" }
+  "engines": {
+    "node": ">=16.13.0"
+  },
+  "dependencies": {
+    "wx-server-sdk": "4.0.2"
+  }
 }

@@ -16,12 +16,17 @@
 npm run build:miniprogram
 npm run build:cloudbase
 npm run check
+npm ci --prefix cloudfunctions/market --omit=dev --ignore-scripts
+npm ci --prefix cloudfunctions/provision --omit=dev --ignore-scripts
+npm run test:cloudbase:runtime
 npm run prepare:cloudbase -- --env 实际环境ID
 ```
 
 命令会在被Git忽略的 `.wechat-local/` 下生成独立项目。原有 `miniprogram/config.js` 保持mock；生成项目写入精确环境、函数名 `longshang-market` 及本机AppID。不会复制node_modules、密钥、本机登录状态或历史运行配置，也不会自动部署或开通云资源。输出的 `preparation.json` 记录文件摘要和“未部署／未核验规则”状态。
 
 生成项目包括 `cloudfunctions/longshang-market/` 和可用时的 `longshang-provision/`。函数运行配置仅包含应用编号、环境编号和明确指定的账户编号；真实值不进公开仓库。现有AppID继续由 `wechat:configure` 校验和保留。
+
+当前官方微信CLI新建的函数实际为Nodejs16.13、默认3秒。已在官方Node16.13验证两套真实SDK及实际安装依赖；provision保留manager SDK 5.9.4，只定向锁定其MIME依赖为兼容版本。远端npm版本不确定，部署时把本机按lock安装并验证的各自 `node_modules` 复制到生成项目对应函数目录，不使用 `--remote-npm-install`，避免覆盖规则未生效。当前依赖没有平台原生二进制；不能把后续加入的Mac原生模块未经核验直接上传Linux运行。
 
 ## 先准备权限和集合，再启用业务
 
@@ -36,7 +41,7 @@ npm run prepare:cloudbase -- --env 实际环境ID
 ```sh
 /Applications/wechatwebdevtools.app/Contents/MacOS/cli cloud functions deploy \
   --env 实际环境ID --paths /部署包/cloudfunctions/longshang-provision \
-  --appid 实际AppID --remote-npm-install
+  --appid 实际AppID
 ```
 
 以上是参数示意，不能原样执行。部署前核对现有函数列表及生成包；不要使用 `upload` 代替开发预览或把部署函数说成小程序已发布。

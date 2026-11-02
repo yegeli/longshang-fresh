@@ -14,9 +14,9 @@ class Documents {
 }
 class CloudbaseStore extends Documents {
   async transaction(action) {
-    // Use explicit SDK transactions: the bundled SDK runTransaction implementation
-    // retries business errors and discards callback values. No outside I/O occurs
-    // in this callback; transient commits may safely be retried via stored keys.
+    // Explicit SDK transactions keep this adapter's return values and business
+    // error handling local. No outside I/O occurs in the callback; transient
+    // commits may safely be retried via stored idempotency keys.
     for(let attempt=0;attempt<3;attempt++) {
       let transaction;
       try { transaction=await this.db.startTransaction(); const result=await action(new Documents(transaction,true)); await transaction.commit(); return result; }

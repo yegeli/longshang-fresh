@@ -25,7 +25,8 @@
     "wechat:preview": "node scripts/wechat-preview.mjs",
     "wechat:bootstrap-admin": "node scripts/bootstrap-wechat-admin.mjs",
     "build:cloudbase": "node cloudfunctions/market/build.mjs",
-    "prepare:cloudbase": "node scripts/prepare-cloudbase.mjs"
+    "prepare:cloudbase": "node scripts/prepare-cloudbase.mjs",
+    "test:cloudbase:runtime": "node tests/cloudbase-runtime-smoke.cjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

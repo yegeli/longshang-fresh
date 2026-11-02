@@ -4,9 +4,16 @@
   "private": true,
   "type": "commonjs",
   "main": "index.js",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=16.13.0"
+  },
   "dependencies": {
     "@cloudbase/manager-node": "5.9.4",
     "wx-server-sdk": "4.0.2"
+  },
+  "overrides": {
+    "@cloudbase/manager-node": {
+      "mime-types": "2.1.35"
+    }
   }
 }

@@ -32,6 +32,22 @@ node --test tests/cloudbase-api.test.mjs tests/cloudbase-transport.test.mjs
 
 `lib/model.cjs`、`lib/storefront.cjs` 是共享纯业务逻辑的构建副本，源文件在 `public/`，修改源文件后重新生成。`package-lock.json` 固定 SDK 版本。部署目录是 `cloudfunctions/market/`，使用微信开发者工具或其官方 CLI 上传新建 `market` 函数并安装依赖。部署时不得覆盖环境中其他函数，`runtime.config.json` 只在本机生成。真实调用不需要 AppSecret；不要把 AppSecret、上传私钥、会话令牌、数据库导出放入 Git。
 
+## 实际云运行时与兼容性验证
+
+微信旧版官方 CLI 创建的事件函数可能使用 `Nodejs16.13`。两个函数包最低版本为 Node 16.13.0，共享 bundle 按 `node16.13` 构建；项目本机开发/完整测试仍使用根工程要求的现代 Node。运行代码不依赖全局 `fetch`、`structuredClone` 或 `AbortSignal.timeout`。
+
+`wx-server-sdk` 固定 4.0.2。provision 保留 `@cloudbase/manager-node` 5.9.4，但定向覆盖它的 `mime-types` 为 2.1.35：默认 3.0.2 要求 Node >=18，而 manager 源码只有未使用的 storage helper 调用 `lookup`；provision 只调用 JSON 云 API。该覆盖保留 `lookup` 的接口，绝不修改权限/索引 API、安全流程或 SDK 身份来源。锁定后的所有依赖 engine 范围包含 16.13.0；今后升级 SDK 必须重新核验并可在更高云运行时移除此兼容覆盖。
+
+安装两个函数包依赖后，用实际 Node 16.13.0 二进制执行：
+
+```sh
+/path/to/node-v16.13.0/bin/node tests/cloudbase-runtime-smoke.cjs
+```
+
+这项检查加载真实 wx SDK 与 manager SDK，替换唯一 SDK 出站 transport、验证 constructor / `commonService` / 顶层响应解包、核验依赖 engine 与 MIME lookup，并通过同一生产 API/事务适配器跑两个客户端购物、模拟下单、幂等库存、发货、收货、售后与单端退出。无真实云 API 或网络调用，不替代已部署环境的权限、索引和真实事务验收。Node 16.13.0 官方二进制与校验文件见 [官方归档](https://nodejs.org/download/release/v16.13.0/)。
+
+如果改用 CloudBase 官方 `tcb` CLI，可以在 `cloudbaserc.json` 的 `functions[].runtime` 显式选 `Nodejs18.15` 或其他受支持版本，见 [官方函数配置](https://docs.cloudbase.net/cli-v1/functions/configs)。这与微信 IDE CLI 的登录/配置流程不同；不能把未验证的配置字段传给旧 CLI，也不能假定已创建函数能直接修改运行时。
+
 ## 调用与会话
 
 客户端只调用 `wx.cloud.callFunction({name:'market',data:event})`，不直接使用云数据库。事件为：

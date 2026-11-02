@@ -44,3 +44,22 @@ jobs:
       - run: npm run test:wechat:worker
       - run: npm run build
       - run: npm run db:local
+
+  wechat-cloud-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --prefix cloudfunctions/market --omit=dev --ignore-scripts --no-audit --no-fund
+      - run: npm ci --prefix cloudfunctions/provision --omit=dev --ignore-scripts --no-audit --no-fund
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 16.13.0
+          package-manager-cache: false
+      - run: node tests/cloudbase-runtime-smoke.cjs
