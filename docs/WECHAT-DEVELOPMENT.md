@@ -31,6 +31,26 @@ AppID保存在被 Git 忽略的 `project.config.json` 中。脚本保留已有�
 
 本机模拟模式默认就绪，第一次使用配置六款商品的20／12份库存；刷新、重开和代码更新不重置已消耗库存。购物车结算生成订单后，在订单详情可依次“模拟商家发货”、确认模拟收货、申请售后、模拟售后处理。这些商家操作仅在本机模拟模式显示，云模式没有客户端提权入口。
 
+## 用已登录的开发者工具预览
+
+首次真机预览优先使用官方微信开发者工具，不需要为此创建代码上传私钥。网页微信后台的登录不会自动登录桌面工具；请用该小程序的管理员或开发者微信扫描工具内的登录二维码。
+
+macOS已安装Homebrew时可用 `brew install --cask wechatwebdevtools` 安装官方发行包。安装后先正常打开一次，完成用户本人扫码登录。若要通过CLI生成预览，需用户在工具的“设置 → 安全设置”开启服务端口；这是允许本机命令调用开发者工具的授权步骤，不应由脚本静默修改安全配置。新版工具若要求CLI访问令牌，按其安全设置配置并通过本机环境变量使用，不写进仓库或聊天。
+
+```sh
+mkdir -p .wechat-local
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli islogin
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli preview \
+  --project "$PWD" \
+  --qr-format image \
+  --qr-output "$PWD/.wechat-local/preview.png" \
+  --info-output "$PWD/.wechat-local/preview-info.json"
+```
+
+命令从仓库根目录执行；安装位置不同则调整CLI路径。必须检查CLI结果和生成的预览二维码，不能把工具登录二维码当作小程序交付。手机扫码后依次验证首页→产区→采购者店铺→商品详情→加购→模拟下单→模拟发货→确认收货→售后处理；本机模拟不跨设备同步。预览上传不等于提交审核或正式发布。
+
+也可在开发者工具导入仓库根目录后点击“预览”。服务端口只为命令行控制所需，使用工具界面的预览功能无需为CLI开启它。参见[微信官方CLI文档](https://developers.weixin.qq.com/miniprogram/dev/devtools/cli.html)。
+
 ## 微信云端接入
 
 `miniprogram/config.js` 默认 `mode: 'mock'`，所有记录只保存在当前微信开发环境或设备。切换到 `mode: 'cloud'` 必须配置自己的独立 `apiBase` HTTPS根地址；云失败明确报错，不改成本机模拟，旧模拟订单不会上传。
@@ -58,7 +78,7 @@ npx tsc --noEmit
 
 原生服务与页面测试覆盖商品到售后的完整模拟流程、重复点击、响应丢失、持久化失败、购物车清理、账号切换和库存不重复扣减。Worker测试在隔离本机数据库中运行，微信接口由测试夹具拦截，禁止向真实微信发送测试凭据。
 
-微信官方工具隔离安装在 `tools/wechat/`，通过 `npm ci --prefix tools/wechat` 安装锁定版本。命令行预览和上传另需微信后台授权的上传私钥；普通官方编译检查不等于已上传、手机可扫码或正式发布。私钥由用户保存在仓库外并受控使用，不能代替微信AppSecret。
+微信官方编译SDK隔离安装在 `tools/wechat/`，通过 `npm ci --prefix tools/wechat` 安装锁定版本。使用该SDK预览和上传另需微信后台授权的代码上传私钥，并配置当前上传出口IP白名单；不通过关闭IP限制解决上传失败。已登录桌面开发者工具的CLI预览是另一条路径，见上文。普通官方编译检查不等于已上传、手机可扫码或正式发布。私钥由用户保存在仓库外并受控使用，不能代替微信AppSecret。
 
 本机macOS／Windows可运行 `npm run compile:miniprogram`，调用锁定版本官方 WCC／WCSC／增强JS编译器，不需要AppID或上传私钥；该原生编译器包没有Linux版本，因此Ubuntu CI运行源码、包体及业务检查，不冒充官方编译。配置真实AppID并由用户准备上传私钥后，运行 `npm run wechat:preview -- --key-file /绝对路径/上传私钥.key` 才会把单独暂存的原生代码提交到微信生成开发预览二维码；不会提交审核或正式发布。预览二维码输出在忽略目录 `.wechat-local/`，生成二维码后仍需真实手机扫码验收。
 
