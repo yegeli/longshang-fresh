@@ -26,7 +26,7 @@ function shopping(value) {
 }
 function product(input,id) {
  fields(input,['id','name','category','status','image','origin','subtitle','tags','summary','storage','sizeNote','facts','harvestSteps','variants','video','videoTitle','videoNote','imageMediaId','videoMediaId','version'],'product_invalid');
- if(input.id!==id||!PRODUCT_ID.test(id)||input.video!==''||input.imageMediaId||input.videoMediaId||!['apples','goji','pear','potato','corn','onion','orchard','apple-orchard','apples-hero'].some(n=>input.image==='assets/'+n+'.jpg'))fail(400,'product_invalid','请使用有效商品编号及已支持的示意素材。云媒体上传尚待接入。');
+ if(input.id!==id||!PRODUCT_ID.test(id)||input.video!==''||['imageMediaId','videoMediaId'].some(k=>input[k]!==undefined&&input[k]!==''&&(typeof input[k]!=='string'||!/^CLOUD-[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$/.test(input[k])))||!['apples','goji','pear','potato','corn','onion','orchard','apple-orchard','apples-hero'].some(n=>input.image==='assets/'+n+'.jpg'))fail(400,'product_invalid','请使用有效商品编号、示意图片及已校验的云素材编号。');
  try{return normalizeCatalogProduct(input);}catch(e){fail(400,'product_invalid',e.message);}
 }
 function stock(body) {

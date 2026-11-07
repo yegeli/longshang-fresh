@@ -1,6 +1,7 @@
 require('./compat');
 const model = require('./generated/model');
 const defaultConfig = require('../config');
+const { createMediaUploader } = require('./cloud-media');
 const MOCK_KEY = 'longshang-native-mock-v1';
 const clone = value => JSON.parse(JSON.stringify(value));
 const emptyShopping = () => ({ cart: [], favorites: [], recent: [], preferredAddress: 'gansu' });
@@ -118,7 +119,7 @@ function createMarket(wxApi, settings) {
       cloudReady.then(initializationError => {
         if (initializationError) return finish(initializationError);
         if (revision !== generation) return finish(error('stale_session', '账号已切换，请重新读取。'));
-        timer = setTimeout(() => finish(error('network_error', '云函数连接未确认完成，请稍后核对并重试；不会切回本机模拟。')), Math.min(30000, Math.max(1000, config.requestTimeout || 15000)));
+        timer = setTimeout(() => finish(error('network_error', '云函数连接未确认完成，请稍后核对并重试；不会切回本机模拟。')), Math.min(30000, Math.max(1000, options && options.timeout || config.requestTimeout || 15000)));
         const event = { path: path + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), method: method || 'GET', ...(data === undefined ? {} : { body: data }),
           ...(!publicRequest && token ? { sessionToken: token, expectedUserId: auth.userId } : {}) };
         try {
@@ -133,7 +134,7 @@ function createMarket(wxApi, settings) {
     return new Promise((resolve, reject) => {
       wxApi.request({ url: origin + path + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), method: method || 'GET', data,
         header: { Accept: 'application/json', ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
-        timeout: Math.min(30000, Math.max(1000, config.requestTimeout || 15000)), enableHttp2: true,
+        timeout: Math.min(30000, Math.max(1000, options && options.timeout || config.requestTimeout || 15000)), enableHttp2: true,
         success: response => {
           if (revision !== generation) return reject(error('stale_session', '账号已切换，请重新读取。'));
           let result = response.data;
@@ -232,6 +233,48 @@ function createMarket(wxApi, settings) {
     if (permission === 'admin' ? session.role !== 'admin' : session.role !== 'admin' && !(session.role === 'merchant' && permissions.some(value => (session.permissions || []).includes(value)))) fail('forbidden', '此账户没有所需管理权限。', 403);
     return request(path, method, data);
   }
+  const uploadMedia = createMediaUploader({ wxApi, request, getGeneration: () => generation,
+    newKey: () => 'MEDIA-' + uuid(),
+    checkIdentity(accountId, revision) {
+      if (!cloudbase) fail('cloudbase_only', '素材上传需要微信云开发服务。', 403);
+      if (revision !== generation || !hasAuth() || !accountId || auth.userId !== accountId) fail('stale_session', '登录已变化，请重新登录后上传。', 409);
+    },
+    async authorize(accountId) {
+      const session = await market.getSession();
+      if (!session.user || session.user.id !== accountId) fail('stale_session', '账号已切换，请重新读取。', 409);
+      if (session.role !== 'admin' && !(session.role === 'merchant' && (session.permissions || []).includes('products'))) fail('forbidden', '此账户没有商品管理权限。', 403);
+    }
+  });
+  // Signed URLs live only in the returned view data, never persistent storage.
+  const mediaUrl = (product, kind) => {
+    const value = product && product[kind + 'Url'];
+    const expiry = product && product[kind + 'ExpiresAt'];
+    return typeof value === 'string' && /^https:\/\/[^\s]+$/i.test(value) && (!expiry || Date.parse(expiry) > Date.now()) ? value : '';
+  };
+  async function orderMedia(result, admin) {
+    if (!cloudbase) return result;
+    const orders = result.order ? [result.order] : result.orders || [];
+    // An order retains its original image even after the seller replaces it.
+    // These URLs require the order's buyer or the authorized merchant session.
+    const jobs = [];
+    for (const order of orders) {
+      const items = order.items || [order], ids = [...new Set(items.map(item => item.imageMediaId).filter(Boolean))];
+      for (const id of ids) jobs.push(async () => {
+        try {
+          const value = await request('/api/v1/' + (admin ? 'admin/' : '') + 'orders/' + encodeURIComponent(order.id) + '/media/' + encodeURIComponent(id));
+          for (const item of items) if (item.imageMediaId === id) { item.imageUrl = value.url; item.imageExpiresAt = value.expiresAt; }
+        } catch (error) {
+          // Image unavailability must not hide the order or its after-sales status.
+          if (['stale_session', 'account_changed', 'session_invalid', 'sign_in_required'].includes(error.code) || error.status === 401) throw error;
+        }
+      });
+    }
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(3, jobs.length) }, async () => {
+      while (next < jobs.length) await jobs[next++]();
+    }));
+    return result;
+  }
   const market = {
     mode: config.mode,
     transport: cloudbase ? 'cloudbase' : cloud ? 'http' : 'mock',
@@ -248,8 +291,9 @@ function createMarket(wxApi, settings) {
       if (cloud && !cloudbase && path.startsWith(origin + '/api/v1/media/') && /^CLOUD-[a-f0-9-]{36}$/i.test(path.slice((origin + '/api/v1/media/').length))) return path;
       return '';
     },
-    imageFor(product) { return cloud && product && product.imageMediaId ? this.assetUrl('/api/v1/media/' + product.imageMediaId) : this.assetUrl(product && product.image); },
-    videoFor(product) { return cloud && product && product.videoMediaId ? this.assetUrl('/api/v1/media/' + product.videoMediaId) : ''; },
+    imageFor(product) { return cloudbase ? mediaUrl(product, 'image') || this.assetUrl(product && product.image) : cloud && product && product.imageMediaId ? this.assetUrl('/api/v1/media/' + product.imageMediaId) : this.assetUrl(product && product.image); },
+    videoFor(product) { return cloudbase ? mediaUrl(product, 'video') : cloud && product && product.videoMediaId ? this.assetUrl('/api/v1/media/' + product.videoMediaId) : ''; },
+    uploadProductMedia(input) { return uploadMedia(input); },
     async getCatalog() { return cloud ? request('/api/v1/products', 'GET', undefined, { public: true }) : { products: clone(PRODUCTS), updatedAt: null }; },
     async getInventory() { return cloud ? request('/api/v1/inventory', 'GET', undefined, { public: true }) : { inventories: Object.values(readMock().inventories), updatedAt: null }; },
     async getStorefront() {
@@ -335,13 +379,13 @@ function createMarket(wxApi, settings) {
           ids.add(order.id); orders.push(order);
         }
         updatedAt = result.updatedAt;
-        if (!result.nextCursor) return { orders, updatedAt, nextCursor: null };
+        if (!result.nextCursor) return orderMedia({ orders, updatedAt, nextCursor: null }, false);
         if (cursors.has(result.nextCursor)) fail('cursor_invalid', '订单分页重复，请重新读取。');
         cursors.add(result.nextCursor); cursor = result.nextCursor;
       }
       fail('pagination_limit', '订单历史过多，请缩小查询范围后重试。');
     },
-    async getOrder(id) { return cloud ? request('/api/v1/orders/' + encodeURIComponent(id)) : { order: lookupOrder(readMock(), id).order }; },
+    async getOrder(id) { return cloud ? orderMedia(await request('/api/v1/orders/' + encodeURIComponent(id)), false) : { order: lookupOrder(readMock(), id).order }; },
     async cancelOrder(id, expectedVersion) { return cloud ? request('/api/v1/orders/' + encodeURIComponent(id) + '/cancel', 'POST', { expectedVersion }) : mutation(id, expectedVersion, 'cancel'); },
     async receiveOrder(id, expectedVersion) { return cloud ? request('/api/v1/orders/' + encodeURIComponent(id) + '/receive', 'POST', { expectedVersion }) : mutation(id, expectedVersion, 'receive'); },
     async createAfterSale(id, input) { return cloud ? request('/api/v1/orders/' + encodeURIComponent(id) + '/aftersale', 'POST', input) : mutation(id, input.expectedVersion, 'aftersale', input); },
@@ -349,6 +393,14 @@ function createMarket(wxApi, settings) {
     async mockShipOrder(id, expectedVersion) { if (cloud) fail('mock_only', '云端订单需要有权限的商家在后台发货。', 403); return mutation(id, expectedVersion, 'ship'); },
     async mockResolveAfterSale(id, expectedVersion, reply) { if (cloud) fail('mock_only', '云端售后需要有权限的商家在后台处理。', 403); return mutation(id, expectedVersion, 'resolve', reply); },
     async getManagementProducts() { return management('products', '/api/v1/admin/products'); },
+    async getManagementMedia(id, accountId) {
+      if (!/^CLOUD-[A-F0-9-]{36}$/.test(id || '')) fail('media_invalid', '素材编号无效。');
+      const revision = generation;
+      if (!hasAuth() || !accountId || auth.userId !== accountId) fail('stale_session', '账号已切换，请重新读取。', 409);
+      const value = await management('products', '/api/v1/admin/media/' + id);
+      if (generation !== revision) fail('stale_session', '账号已切换，请重新读取。', 409);
+      return value;
+    },
     async getManagementInventory() { return management('products', '/api/v1/admin/inventory'); },
     async saveManagementProduct(product, expectedVersion, accountId) { return management('products', '/api/v1/admin/products/' + encodeURIComponent(product.id), 'PUT', { product, expectedVersion }, accountId); },
     async saveManagementInventory(id, input, accountId) { return management('products', '/api/v1/admin/inventory/' + encodeURIComponent(id), 'PUT', input, accountId); },
@@ -368,7 +420,7 @@ function createMarket(wxApi, settings) {
           if (!order || typeof order.id !== 'string' || ids.has(order.id)) fail('response_invalid', '订单列表重复，请重新读取。');
           ids.add(order.id); orders.push(order);
         }
-        if (!result.nextCursor) return { orders, nextCursor: null };
+        if (!result.nextCursor) return orderMedia({ orders, nextCursor: null }, true);
         if (cursors.has(result.nextCursor)) fail('cursor_invalid', '订单分页重复，请重新读取。');
         cursors.add(result.nextCursor); cursor = result.nextCursor;
       }

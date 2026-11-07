@@ -12,7 +12,8 @@ const provision = createProvision({
     const CloudBase = require('@cloudbase/manager-node');
     return new CloudBase({ envId });
   },
-  getDatabase: () => cloud.database({ throwOnNotFound: false })
+  getDatabase: () => cloud.database({ throwOnNotFound: false }),
+  getStorage: () => cloud
 });
 exports.main = async event => {
   // wx.cloud.callFunction adds userInfo/tcbContext to the event. Ignore these

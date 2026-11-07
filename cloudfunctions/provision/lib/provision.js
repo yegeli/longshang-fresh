@@ -2,6 +2,8 @@
 const { randomUUID } = require('node:crypto');
 const { manifest, digest, schemaVersion, manifestHash, markerKey, matchesMarker } = require('./contract');
 const { functionRuntime } = require('./runtime');
+const { storageInspect } = require('./storage');
+const { storageProbe } = require('./storage-probe');
 const META = 'lsf_meta';
 const LEASE_MS = 6000;
 const INVOCATION_BUDGET_MS = 2200;
@@ -52,13 +54,13 @@ const collectionOrder = [META,...COLLECTION_NAMES.filter(name=>name!==META)];
 function validState(state,appId,envId) {
   return matchesMarker(state,appId,envId) && state.id==='provision-state' && validAccount(state.operatorAccountId) && state.formatVersion===2 && /^[a-f0-9-]{36}$/.test(state.roundId||'') && Number.isSafeInteger(state.version) && state.version>0 && ['prepare','verify','complete'].includes(state.phase) && Number.isInteger(state.cursor) && state.cursor>=0 && state.cursor<13 && ['describe','create-write','create-recover','acl','rule','count','index-check','index-write','index-recover','finalize'].includes(state.action) && Number.isInteger(state.indexCursor) && state.indexCursor>=0 && state.indexCursor<=10 && state.ownedCollections && typeof state.ownedCollections==='object' && state.receipts && typeof state.receipts==='object';
 }
-function createProvision({getContext,getConfig,createManager,getDatabase,now=()=>Date.now()}) {
+function createProvision({getContext,getConfig,createManager,getDatabase,getStorage,now=()=>Date.now()}) {
  return async function provision(event={}) {
   const startedAt=now();let operation='validate',collection;
   const step=async(name,target,action)=>{operation=name;collection=target;return action();};
   const reply=(state,extra={})=>({status:200,body:{ready:false,needsRetry:true,dryRun:false,manifestHash,progress:{phase:state?.phase||'bootstrap',collection:state?collectionOrder[state.cursor]:META,action:state?.action||'create-meta',version:state?.version||0},...extra}});
   try {
-   if(!plain(event)||Object.keys(event).some(key=>!['operation','apply'].includes(key))||event.operation!==undefined&&!['identity','inspect','provision','runtime-inspect','runtime-configure','provision-runtime-inspect','provision-runtime-configure'].includes(event.operation)||event.apply!==undefined&&typeof event.apply!=='boolean'||event.operation==='identity'&&event.apply!==undefined||event.apply===true&&!['provision','runtime-configure','provision-runtime-configure'].includes(event.operation))reject(400,'invalid_request','仅支持受控身份、初始化和运行配置操作；客户端不能选择目标、数值、集合、阶段、身份或权限。');
+   if(!plain(event)||Object.keys(event).some(key=>!['operation','apply'].includes(key))||event.operation!==undefined&&!['identity','inspect','provision','runtime-inspect','runtime-configure','provision-runtime-inspect','provision-runtime-configure','storage-inspect','storage-probe-start','storage-probe-finish'].includes(event.operation)||event.apply!==undefined&&typeof event.apply!=='boolean'||['identity','storage-inspect'].includes(event.operation)&&event.apply!==undefined||event.operation?.startsWith('storage-probe-')&&event.apply!==true||event.apply===true&&!['provision','runtime-configure','provision-runtime-configure','storage-probe-start','storage-probe-finish'].includes(event.operation))reject(400,'invalid_request','仅支持受控身份、初始化、存储核验和运行配置操作；客户端不能选择目标、数值、集合、阶段、身份或权限。');
    let config;try{config=getConfig();}catch{reject(503,'provision_unconfigured','初始化函数配置无效。');}
    const context=getContext();
    if(!config||!/^wx[a-f0-9]{16}$/.test(config.WECHAT_APP_ID||'')||!context||context.APPID!==config.WECHAT_APP_ID||typeof context.OPENID!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(context.OPENID))reject(401,'wechat_context_invalid','请从对应小程序以本人微信调用。');
@@ -67,6 +69,8 @@ function createProvision({getContext,getConfig,createManager,getDatabase,now=()=
    if(event.operation==='identity')return {status:200,body:{accountId}};
    if(!validAccount(config.PROVISION_OPERATOR_ACCOUNT_ID))reject(403,'operator_unconfigured','请先核对 identity 并在服务端配置初始化操作者。');
    if(accountId!==config.PROVISION_OPERATOR_ACCOUNT_ID)reject(403,'operator_forbidden','当前微信账号不是初始化操作者。');
+   if(event.operation==='storage-inspect')return await storageInspect({appId:config.WECHAT_APP_ID,envId:config.CLOUDBASE_ENV_ID,accountId,createManager,getDatabase,now,step,reject});
+   if(event.operation?.startsWith('storage-probe-'))return await storageProbe({operation:event.operation,appId:config.WECHAT_APP_ID,envId:config.CLOUDBASE_ENV_ID,accountId,createManager,getDatabase,getStorage,now,step,reject});
    if(['runtime-inspect','runtime-configure','provision-runtime-inspect','provision-runtime-configure'].includes(event.operation))return await functionRuntime({operation:event.operation,apply:event.apply,envId:config.CLOUDBASE_ENV_ID,createManager,step,reject});
    if(JSON.stringify(manifest.collections)!==JSON.stringify(COLLECTION_NAMES)||manifest.clientRules.read!==false||manifest.clientRules.write!==false||manifest.indexes.some(item=>!COLLECTION_NAMES.includes(item.collection)))reject(503,'manifest_invalid','部署集合清单无效。');
    const appId=config.WECHAT_APP_ID,envId=config.CLOUDBASE_ENV_ID,apply=event.operation==='provision'&&event.apply===true;

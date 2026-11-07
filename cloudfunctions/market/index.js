@@ -3,9 +3,10 @@ const cloud=require('wx-server-sdk');
 const {CloudbaseStore}=require('./lib/store');
 const {runtimeConfig}=require('./lib/config');
 const {createMarketApi}=require('./lib/api');
+const {createMediaStorage}=require('./lib/media-storage');
 cloud.init({env:cloud.DYNAMIC_CURRENT_ENV,throwOnNotFound:false});
 let api;
-try {api=createMarketApi({store:new CloudbaseStore(cloud.database({throwOnNotFound:false})),getContext:()=>cloud.getWXContext(),env:runtimeConfig()});}
+try {api=createMarketApi({store:new CloudbaseStore(cloud.database({throwOnNotFound:false})),getContext:()=>cloud.getWXContext(),env:runtimeConfig(),storage:createMediaStorage(cloud)});}
 catch {api=async()=>({status:503,body:{error:{code:'cloudbase_unconfigured',message:'云函数运行配置无效，请管理员检查部署。'}}});}
 // CloudBase adds userInfo and tcbContext to event. Both are transport metadata,
 // never identity or permissions; only getWXContext() above establishes caller.

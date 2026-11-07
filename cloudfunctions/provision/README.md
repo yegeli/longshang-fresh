@@ -38,6 +38,22 @@ marker 存在 `lsf_meta`，文档键为 SHA-256(`provision-ready`) 前32个十�
 
 完成后可删除服务端 PROVISION_OPERATOR_ACCOUNT_ID 并重新部署此函数关闭检查/修改入口；不要清除 ready、checkpoint 或管理员单例。旧 formatVersion:1 checkpoint 不会自动覆盖，须先人工确认归属和迁移；未知状态保持拒绝。
 
+## 媒体存储只读核验
+
+已配置的同一操作者可调用精确的 `{operation:'storage-inspect'}`。不接受apply、文件路径、ACL或规则等客户端参数。函数先核对 `lsf_meta` 当前微信安全规则为ADMINONLY及本项目的 `provision-ready`，再通过官方 `manager.storage.getStorageAcl({withRule:true})` 读取共享存储权限。此操作不调用setStorageAcl，不更改存储规则、其他项目的文件、域名或运行角色。
+
+返回仅含ACL、是否存在自定义规则、自定义规则的SHA-256摘要、核验时间及 `storageReady`；不返回完整规则或服务端SDK响应。固定的 `lsf_meta` 记录 `markerKey('media-storage-ready')` 使用 `mediaPolicy:'server-owned-display-v1'`，只允许本轮非敏感、可公开展示的模拟商品图片和采摘视频。ACL为ADMINONLY时可写ready:true；PRIVATE还必须有同应用、环境、操作者已完成的代表性探针，结果同时为 `representative:true,fileIntact:true,cleanedUp:true`，记录其核验时间。没有合格探针或其他ACL均写ready:false。旧ready在重新读取存储权限前先失效，所以API失败或未知ACL不会留下本次仍可用的旧记录。归属不匹配的记录拒绝覆盖。
+
+这是存储规则及商品展示用途的时间快照，不能把它当作长期不变的权限保证或文件保密证明。商城媒体接口须核对应用、环境、固定标记、对应mediaPolicy、允许的ACL、ready及有效时间，过期或缺失则关闭上传读取。若共享存储当前是其他规则，本操作只报告且保持媒体关闭，不能为本项目擅自改动整桶规则。
+
+2026-11-07的真实微信探针发现：Manager返回PRIVATE，但同一微信调用者持完整fileID可以通过原生 `wx.cloud.getTempFileURL` 换链并下载；原生覆盖返回-503002、删除逐项status为1，服务端带签名URL可读，不带签名URL为403。因此不能宣称“草稿只有所属商家可读”或将fileID视为绝对保密标识。此次未取得官方CloudBase文件创建者元数据，也未证实差异来自所有者归属还是微信与CloudBase鉴权链路；这里只记录实际结果，不猜测底层机制。
+
+本轮素材从上传起就是可公开展示的商品内容，上传入口需明确该用途。服务端仍校验采购者身份、商品归属、权限和版本，只有当前已发布绑定会由买家业务API返回；未发布素材不进入商城展示列表，发布规则控制业务API发现，不保证持完整文件标识或已获链接者无法继续阅读。不可枚举随机路径用于减少发现和猜测，不能替代读取权限；素材不得承载身份证、合同、私聊或售后证据等私密资料。商品、订单和售后的数据库权限隔离继续独立生效，客户记录不会改用此素材机制。
+
+PRIVATE规则是否适用于服务端上传须另外验证，不能仅凭“云函数是管理员”推断文件归属。受控操作者可显式调用 `{operation:'storage-probe-start',apply:true}`：只在现有PRIVATE或ADMINONLY规则下，为固定1像素PNG生成随机 `lsf-media/probes/` 路径，先在固定META记录持久保存nonce和路径，再由与商城相同的wx-server-sdk上传，成功后保存SDK返回的fileID。该路径的首次对象操作必须是wx-server-sdk.uploadFile，不能先通过Manager注册上传元数据，以免改变待测文件的归属。成功响应包含本次探针的nonce、fileID、path及服务端300秒链接，供核对带签名与不带签名访问差异。重复start沿用同一探针，不覆盖文件或留下多个随机文件；客户端不能提供内容、路径、编号或“已拒绝”验证结果。上传响应丢失的探针标为非代表性，finish只清理已持久记录的精确路径，不能拿它作为权限证据。
+
+用同一个真实调用者从小程序直接尝试读取、换取URL、覆盖及删除此探针，观察实际权限结果后，调用 `{operation:'storage-probe-finish',apply:true}`。finish通过服务端限量读取并核对PNG摘要，只删除固定记录中的该探针，报告文件是否完整和清理是否成功；删除异常保留记录供重试。Manager SDK传统文件信息API没有提供CloudBase文件创建者字段，所以返回 `ownerMetadataAvailable:false`，不以COS账号Owner冒充微信openid。finish不写媒体就绪标记，也不接受客户端报告的“已拒绝”；后续另行运行storage-inspect，合格探针只满足非敏感商品展示策略的前置条件，始终不作为读取保密证明。整个过程不更改共享存储权限。
+
 ## 凭据和失败
 
 官方 Manager SDK 在事件云函数内自动使用临时运行身份。项目代码不读取、存储或打印密钥，不申请新 CAM 权限，不扩大执行角色。HTTP/Web 函数不自动拥有相同身份，不能套用此配置。配置只接受上述三个编号。
@@ -49,6 +65,8 @@ marker 存在 `lsf_meta`，文档键为 SHA-256(`provision-ready`) 前32个十�
 ```sh
 npm ci --prefix cloudfunctions/provision --ignore-scripts
 node --test tests/cloudbase-provision.test.mjs
+node --test tests/cloudbase-storage-provision.test.mjs
+node --test tests/cloudbase-storage-probe.test.mjs
 ```
 
 测试强制每调用最多两个控制面请求，覆盖时间预算、可信身份、只读默认、原子权限参数、未知数据保护、写响应丢失、租约恢复、异步定义等待、过期回执重验及错误脱敏；运行配置测试另核对精确的固定参数、零数据库访问、未改变其他配置与后续Active读回。实际SDK运行时smoke核验两种配置API的请求与响应解包。没有真实云写入。
