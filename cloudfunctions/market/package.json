@@ -8,6 +8,7 @@
     "node": ">=16.13.0"
   },
   "dependencies": {
+    "mime-db": "1.52.0",
     "wx-server-sdk": "4.0.2"
   }
 }

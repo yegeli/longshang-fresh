@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@cloudbase/manager-node": "5.9.4",
+    "mime-db": "1.52.0",
     "wx-server-sdk": "4.0.2"
   },
   "overrides": {

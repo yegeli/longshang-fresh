@@ -1,6 +1,6 @@
 # 受控 CloudBase 分步初始化
 
-`provision` 是独立事件云函数，仅准备清单中的13个 `lsf_` 集合、客户端隔离、查询索引及就绪标记。不创建账号、不分配角色、不初始化商品、不接支付、不修改其他函数。代码和本机测试不代表云端执行角色已有管理权限。
+`provision` 是独立事件云函数，准备清单中的13个 `lsf_` 集合、客户端隔离、查询索引及就绪标记，另提供固定商城函数的30秒限时配置。不创建账号、不分配角色、不初始化商品、不接支付；不修改其他项目的函数。代码和本机测试不代表云端执行角色已有管理权限。
 
 ## 配置和调用
 
@@ -9,6 +9,14 @@
 3. 部署者核对本人编号后，服务端显式配置 `PROVISION_OPERATOR_ACCOUNT_ID` 并重新部署。没有此配置时仅 identity 可用，不自动认领首位访问者。真实编号与配置不进公开 Git。
 4. 空对象、`{operation:'inspect'}`、未带 apply 的 provision 都只读；inspect 返回服务端进度与上次验证快照，不遍历全部云资源、不写 checkpoint。
 5. 连续调用精确的 `{operation:'provision',apply:true}`。每次由服务端选择一个固定动作，最多两个控制面请求；客户端不能传集合或阶段。未完成返回 `{status:200,body:{ready:false,needsRetry:true,progress:{phase,collection,action,version}}}`。收到 ready:true 才停止成功续做。非200按 error 检查；租约占用或调用被平台超时截断时，等待至少六秒后重试相同事件。
+
+## 商城函数执行限时
+
+旧微信CLI创建函数的实际默认限时为3秒，首次商品初始化等事务仍需真实云验证。相同的可信应用、环境和已配置操作者可以调用 `{operation:'runtime-inspect'}` 只读核对固定的 `longshang-market`，然后显式调用 `{operation:'runtime-configure',apply:true}` 把执行限时设为固定30秒。省略apply或传false只读；客户端不能指定函数名、数值、环境、内存、角色或环境变量。此路径不访问商城集合，可以在集合初始化之前使用。
+
+配置操作先读 `GetFunction`，只有函数为Active且当前限时不同才发送 `UpdateFunctionConfiguration`；每调用最多两个控制面请求。写入只包含EnvId、固定FunctionName和Timeout:30，不修改内存、角色、环境变量、日志配置、代码或套餐。底层使用官方Manager SDK的公共服务调用，与其函数API使用同一tcb服务／版本；避开高阶SDK在旧SCF上的自动CLS字段注入。
+
+写入响应仅表示已提交，返回 `configured:false,needsVerification:true`。之后再次调用runtime-inspect，只有回读限时30且状态Active才返回configured:true；不能把提交成功当成生效。函数仍在更新时不重复提交。读取和错误返回只含白名单摘要，不返回原始函数详情、代码、角色、环境变量或SDK错误文本。权限不足时停止，不授予额外IAM权限。30秒配置也不等于业务流程已经验证。
 
 首次只原子创建 META，并在后续调用核验 ADMINONLY 后才存 checkpoint。每次调用先重新查询 META 的微信安全规则；初始化和最终复核还分别记录 `DescribeDatabaseACL`、带 `WxAppId` 的 `DescribeSafeRule`。集合通过官方 `CreateTable` 的 `PermissionInfo:{EnvId,AclTag:'ADMINONLY'}` 原子锁定，不依赖未声明的默认权限。Tag 是官方可选字段；实现仅使用可信绑定的 EnvId，若实际服务不支持省略会安全报错，不猜数据库编号。
 
@@ -39,6 +47,6 @@ npm ci --prefix cloudfunctions/provision --ignore-scripts
 node --test tests/cloudbase-provision.test.mjs
 ```
 
-测试强制每调用最多两个控制面请求，覆盖时间预算、可信身份、只读默认、原子权限参数、未知数据保护、写响应丢失、租约恢复、异步定义等待、过期回执重验及错误脱敏。没有真实云写入。
+测试强制每调用最多两个控制面请求，覆盖时间预算、可信身份、只读默认、原子权限参数、未知数据保护、写响应丢失、租约恢复、异步定义等待、过期回执重验及错误脱敏；运行配置测试另核对精确的固定参数、零数据库访问、未改变其他配置与后续Active读回。实际SDK运行时smoke核验两种配置API的请求与响应解包。没有真实云写入。
 
-官方依据：[Manager SDK](https://docs.cloudbase.net/api-reference/manager/node/introduction)、[CreateTable](https://cloud.tencent.cn/document/api/876/127968)、[权限接口](https://docs.cloudbase.net/api-reference/manager/node/rule)、[微信 DescribeSafeRule](https://cloud.tencent.com/document/api/876/128118)、[索引定义 API](https://docs.cloudbase.net/api-reference/manager/node/database)。
+官方依据：[Manager SDK](https://docs.cloudbase.net/api-reference/manager/node/introduction)、[函数配置API](https://docs.cloudbase.net/api-reference/manager/node/function)、[CreateTable](https://cloud.tencent.cn/document/api/876/127968)、[权限接口](https://docs.cloudbase.net/api-reference/manager/node/rule)、[微信 DescribeSafeRule](https://cloud.tencent.com/document/api/876/128118)、[索引定义 API](https://docs.cloudbase.net/api-reference/manager/node/database)。

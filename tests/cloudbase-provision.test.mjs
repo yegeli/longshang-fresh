@@ -18,7 +18,7 @@ function fixture({operator=true}={}) {
   let time=Date.parse('2026-11-03T03:00:00.000Z');
   const config={WECHAT_APP_ID:APPID,CLOUDBASE_ENV_ID:ENV_ID,...(operator?{PROVISION_OPERATOR_ACCOUNT_ID:account('operator')}:{})};
   const context={APPID,OPENID:'operator',ENV:ENV_ID};
-  const state={memory,tables,calls,config,context,hook:null,dbCalls:0,managerCreations:0,created:[],indexWrites:[],envInfo:{EnvInfo:{EnvId:ENV_ID,Databases:[{Status:'RUNNING',InstanceId:'tnt-example'}]}}};
+  const state={memory,tables,calls,config,context,hook:null,dbCalls:0,managerCreations:0,created:[],indexWrites:[],runtimeWrites:[],runtimeInfo:{FunctionName:'longshang-market',Timeout:3,Status:'Active',MemorySize:128,Role:'PRIVATE_ROLE',Environment:{Variables:[{Key:'PRIVATE_KEY',Value:'SECRET_TOKEN'}]},CodeInfo:'PRIVATE_CODE'},envInfo:{EnvInfo:{EnvId:ENV_ID,Databases:[{Status:'RUNNING',InstanceId:'tnt-example'}]}}};
   const db={
     collection(name){assert.ok(manifest.collections.includes(name),'No nonmanifest collection access');state.dbCalls++;const collection=memory.collection(name);const originalDoc=collection.doc.bind(collection);collection.doc=id=>{const d=originalDoc(id);const get=d.get.bind(d);d.get=async()=>{if(!tables.has(name))throw Object.assign(Error('missing collection'),{code:'DATABASE_COLLECTION_NOT_EXIST'});return get();};return d;};collection.count=async()=>({total:memory.dump(name).length});return collection;},
     startTransaction:()=>memory.startTransaction()
@@ -26,6 +26,16 @@ function fixture({operator=true}={}) {
   const common={async call(request){
     const {Action,Param}=request;calls.push(copy(request));await state.hook?.(request);
     assert.equal(Param.EnvId,ENV_ID);
+    if(Action==='GetFunction'){
+      assert.deepEqual(Param,{EnvId:ENV_ID,FunctionName:'longshang-market'});
+      return copy(state.runtimeInfo);
+    }
+    if(Action==='UpdateFunctionConfiguration'){
+      assert.deepEqual(Param,{EnvId:ENV_ID,FunctionName:'longshang-market',Timeout:30});
+      state.runtimeWrites.push(copy(request));
+      if(!state.delayRuntime)state.runtimeInfo.Timeout=30;
+      return {};
+    }
     const name=Param.TableName||Param.CollectionName;
     assert.ok(manifest.collections.includes(name),'No nonmanifest management API');
     const table=tables.get(name);if(state.apiLatency)time+=state.apiLatency;
@@ -67,6 +77,51 @@ test('identity and denied/forged requests never initialize the manager or touch 
 });
 test('trusted application, environment and exact operator binding precede all resource access',async()=>{
  const f=fixture();f.context.OPENID='buyer';assert.equal((await f.invoke(apply)).body.error.code,'operator_forbidden');f.context.OPENID='operator';f.context.ENV='other-env';assert.equal((await f.invoke(apply)).body.error.code,'environment_mismatch');f.context.ENV=ENV_ID;f.context.APPID='wx2222222222222222';assert.equal((await f.invoke(apply)).body.error.code,'wechat_context_invalid');assert.equal(f.managerCreations,0);
+});
+test('runtime actions require the same trusted app, environment and exact operator before resource access',async()=>{
+ for(const operation of ['runtime-inspect','runtime-configure']){
+  const f=fixture({operator:false}),event={operation,...(operation==='runtime-configure'?{apply:true}:{})};
+  assert.equal((await f.invoke(event)).body.error.code,'operator_unconfigured');
+  f.config.PROVISION_OPERATOR_ACCOUNT_ID=account('operator');f.context.OPENID='buyer';assert.equal((await f.invoke(event)).body.error.code,'operator_forbidden');
+  f.context.OPENID='operator';f.context.APPID='wx2222222222222222';assert.equal((await f.invoke(event)).body.error.code,'wechat_context_invalid');
+  f.context.APPID=APPID;f.context.ENV='other-env';assert.equal((await f.invoke(event)).body.error.code,'environment_mismatch');
+  assert.equal(f.calls.length,0);assert.equal(f.dbCalls,0);assert.equal(f.managerCreations,0);
+ }
+});
+test('runtime operation target, timeout and privilege fields cannot be supplied by clients',async()=>{
+ const f=fixture();
+ for(const extra of [{name:'another-function'},{functionName:'longshang-market'},{timeout:30},{Timeout:30},{envId:ENV_ID},{role:'admin'},{memorySize:256},{envVariables:{}}])assert.equal((await f.invoke({operation:'runtime-configure',apply:true,...extra})).status,400);
+ assert.equal((await f.invoke({operation:'runtime-inspect',apply:true})).status,400);assert.equal(f.calls.length,0);assert.equal(f.dbCalls,0);
+});
+test('runtime inspection and configure without explicit apply are read-only and expose only an allowlist',async()=>{
+ const f=fixture();
+ for(const event of [{operation:'runtime-inspect'},{operation:'runtime-configure'},{operation:'runtime-configure',apply:false}]){
+  const result=await f.invoke(event);assert.equal(result.status,200);assert.equal(result.body.dryRun,true);assert.equal(result.body.configured,false);
+  assert.deepEqual(result.body.runtime,{functionName:'longshang-market',timeoutSeconds:3,targetTimeoutSeconds:30,active:true});
+  assert.ok(!/PRIVATE|SECRET_TOKEN|Environment|CodeInfo|Role/.test(JSON.stringify(result)));
+ }
+ assert.equal(f.runtimeWrites.length,0);assert.equal(f.dbCalls,0);assert.equal(f.memory.dump().length,0);
+});
+test('runtime configure changes only the fixed timeout and requires a later active readback',async()=>{
+ const f=fixture(),before=copy(f.runtimeInfo);
+ const result=await f.invoke({operation:'runtime-configure',apply:true});assert.equal(result.status,200);assert.equal(result.body.needsVerification,true);assert.equal(result.body.configured,false);assert.equal(result.body.verificationSnapshot,false);
+ assert.deepEqual(f.calls.map(c=>c.Action),['GetFunction','UpdateFunctionConfiguration']);assert.deepEqual(f.runtimeInfo,{...before,Timeout:30});
+ const inspected=await f.invoke({operation:'runtime-inspect'});assert.equal(inspected.body.configured,true);assert.equal(inspected.body.verificationSnapshot,true);
+ assert.equal((await f.invoke({operation:'runtime-configure',apply:true})).body.configured,true);assert.equal(f.runtimeWrites.length,1);assert.equal(f.dbCalls,0);
+});
+test('runtime updating or unverified provider output never reports readiness or blindly resubmits',async()=>{
+ const f=fixture();f.delayRuntime=true;await f.invoke({operation:'runtime-configure',apply:true});
+ assert.equal((await f.invoke({operation:'runtime-inspect'})).body.configured,false);
+ f.runtimeInfo.Status='Updating';f.runtimeInfo.Timeout=30;assert.equal((await f.invoke({operation:'runtime-inspect'})).body.configured,false);
+ assert.equal((await f.invoke({operation:'runtime-configure',apply:true})).body.error.code,'function_not_active');assert.equal(f.runtimeWrites.length,1);
+ f.runtimeInfo.Status='Active';assert.equal((await f.invoke({operation:'runtime-inspect'})).body.configured,true);
+ for(const patch of [{FunctionName:'another-function'},{Timeout:'30'},{Timeout:0}]){const other=fixture();Object.assign(other.runtimeInfo,patch);assert.equal((await other.invoke({operation:'runtime-configure',apply:true})).body.error.code,'function_configuration_unknown');assert.equal(other.runtimeWrites.length,0);}
+});
+test('runtime provider failures retain only sanitized action and error code without credentials',async()=>{
+ for(const action of ['GetFunction','UpdateFunctionConfiguration']){
+  const f=fixture();f.hook=async request=>{if(request.Action===action)throw Object.assign(Error('SECRET_TOKEN PRIVATE_ROLE PRIVATE_CODE'),{code:'UnauthorizedOperation.CAM',headers:{Authorization:'SECRET_TOKEN'}});};
+  const result=await f.invoke({operation:'runtime-configure',apply:true});assert.equal(result.status,503);assert.equal(result.body.error.operation,action);assert.equal(result.body.error.providerCode,'UnauthorizedOperation.CAM');assert.ok(!/SECRET_TOKEN|PRIVATE|headers|Authorization/.test(JSON.stringify(result)));assert.equal(f.dbCalls,0);
+ }
 });
 test('default inspection is read-only and metadata is atomically locked before checkpoints exist',async()=>{
  const f=fixture();let r=await f.invoke();assert.equal(r.body.ready,false);assert.equal(r.body.dryRun,true);assert.equal(f.calls.length,0);assert.equal(f.tables.size,0);
