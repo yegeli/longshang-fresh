@@ -26,7 +26,11 @@ npm run prepare:cloudbase -- --env 实际环境ID
 
 生成项目包括 `cloudfunctions/longshang-market/` 和可用时的 `longshang-provision/`。函数运行配置仅包含应用编号、环境编号和明确指定的账户编号；真实值不进公开仓库。现有AppID继续由 `wechat:configure` 校验和保留。
 
-当前官方微信CLI新建的函数实际为Nodejs16.13、默认3秒。已在官方Node16.13验证两套真实SDK及实际安装依赖；provision保留manager SDK 5.9.4，只定向锁定其MIME依赖为兼容版本。远端npm版本不确定，部署时把本机按lock安装并验证的各自 `node_modules` 复制到生成项目对应函数目录，不使用 `--remote-npm-install`，避免覆盖规则未生效。当前依赖没有平台原生二进制；不能把后续加入的Mac原生模块未经核验直接上传Linux运行。
+当前官方微信CLI新建的函数实际为Nodejs16.13、默认3秒。两套函数已在官方Node16.13下复制到仓库外、加载真实入口验证，禁止借用父目录依赖。`wx-server-sdk@4.0.2` 的打包代码会加载未声明的 `mime-db`，因此两个函数都显式锁定该依赖；provision还定向锁定manager的MIME依赖为兼容版本。远端npm版本不确定，部署时把本机按lock安装并验证的各自 `node_modules` 复制到生成项目对应函数目录，不使用 `--remote-npm-install`。当前依赖没有平台原生二进制；不能把后续加入的Mac原生模块未经核验直接上传Linux运行。
+
+真实调用需要把 `longshang-provision` 的执行超时设置为15秒、`longshang-market` 设置为30秒。操作者配置完成后，可通过受控 `provision-runtime-inspect`／`provision-runtime-configure` 和 `runtime-inspect`／`runtime-configure` 操作核对与设置；配置操作必须显式 `apply:true`，目标和值固定，写后另行只读核实Active状态和时限。若初始化函数自身仍受3秒限制，连配置调用也超时，则在微信开发者工具“云开发 → 云函数 → 对应函数的版本与配置 → 配置 → 高级配置”只调整执行超时并读回确认。当前CLI没有这项直接修改命令，不编造参数，也不因超时购买套餐或增加内存。
+
+微信实际调用会附加 `userInfo`、`tcbContext`，两个入口只忽略这些传输字段，其内容不参与身份或权限判断，仍使用 `getWXContext()`。数据库读取带有的 `_id` 也必须在checkpoint写入前剥离；遇到中断按已有进度续做，不重建或清空集合。
 
 ## 先准备权限和集合，再启用业务
 
