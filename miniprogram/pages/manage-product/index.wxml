@@ -6,18 +6,31 @@
   <view wx:if="{{!loading && allowed && product}}">
     <view wx:if="{{isNew}}" class="surface"><text class="heading">选择模拟商品模板</text><text class="small muted">内置图片和资料仅为示意，保存后归当前采购者管理。先存草稿，再上传素材、配置库存与上架。</text><view class="template-grid"><button wx:for="{{templates}}" wx:key="id" class="secondary" data-id="{{item.id}}" bindtap="template" disabled="{{processing}}">{{item.name}}</button></view></view>
     <text class="heading">{{product.name}}</text><text class="body-copy">{{product.origin}} · 商品版本 {{product.version}}</text>
+    <view wx:if="{{hasProductChanges}}" class="note editor-unsaved">有尚未保存的商品修改。预览显示云端已保存版本，当前填写会保留。</view>
+    <view class="editor-quick-actions"><button class="primary" bindtap="saveProduct" loading="{{processing}}" disabled="{{processing || uploading}}">{{isNew ? '先保存模拟草稿' : '保存商品修改'}}</button><button wx:if="{{!isNew}}" class="secondary" bindtap="previewSaved" disabled="{{processing || uploading}}">预览已保存商品</button><button wx:if="{{!isNew}}" class="text-button" data-kind="product" bindtap="records" disabled="{{processing || uploading}}">商品变更记录</button><button wx:if="{{!isNew}}" class="text-button" data-kind="inventory" bindtap="records" disabled="{{processing || uploading}}">库存调整记录</button></view>
     <view class="surface">
-      <text class="heading">商品资料与价格</text>
-      <text class="field-label">商品名称</text><input class="input-box" maxlength="80" value="{{name}}" data-field="name" bindinput="field" disabled="{{processing}}"/>
+      <text class="eyebrow">01 / 基础资料</text><text class="heading">让买家认识这份好物</text>
+      <text class="field-label">商品名称（最多40字）</text><input class="input-box" maxlength="40" value="{{name}}" data-field="name" bindinput="field" disabled="{{processing}}"/>
+      <text class="field-label">商品分类</text><picker range="{{categories}}" range-key="name" value="{{categoryIndex}}" bindchange="category" disabled="{{processing}}"><view class="input-box editor-picker">{{categories[categoryIndex].name}}<text>选择 ›</text></view></picker>
       <text class="field-label">产地</text><input class="input-box" maxlength="120" value="{{origin}}" data-field="origin" bindinput="field" disabled="{{processing}}"/>
-      <text class="field-label">商品介绍</text><textarea class="description-input" maxlength="1000" value="{{summary}}" data-field="summary" bindinput="field" disabled="{{processing}}"/>
-      <text class="field-label">小份装价格（元）</text><input class="input-box" type="digit" maxlength="10" value="{{smallPrice}}" data-field="smallPrice" bindinput="field" disabled="{{processing}}"/>
-      <text class="field-label">家庭装价格（元）</text><input class="input-box" type="digit" maxlength="10" value="{{familyPrice}}" data-field="familyPrice" bindinput="field" disabled="{{processing}}"/>
-      <view class="info-row"><text>对买家上架</text><switch checked="{{published}}" disabled="{{isNew || processing || uploading}}" bindchange="published" color="#28654b"/></view>
-      <button class="primary wide" bindtap="saveProduct" loading="{{processing}}" disabled="{{processing || uploading}}">{{isNew ? '先保存模拟草稿' : '保存资料、素材与状态'}}</button>
+      <text class="field-label">一句话简述</text><textarea class="description-input editor-short" maxlength="160" value="{{subtitle}}" data-field="subtitle" bindinput="field" disabled="{{processing}}" placeholder="例如：日常分享的清脆苹果，模拟资料"/>
+      <text class="field-label">标签（最多12个，以逗号分隔）</text><input class="input-box" maxlength="500" value="{{tagsText}}" data-field="tagsText" bindinput="field" disabled="{{processing}}" placeholder="例如：景泰好物，模拟特产，时令水果"/>
+      <text class="field-label">商品详细介绍</text><textarea class="description-input" maxlength="2000" value="{{summary}}" data-field="summary" bindinput="field" disabled="{{processing}}"/>
+    </view>
+    <view class="surface">
+      <text class="eyebrow">02 / 规格与模拟价格</text><text class="heading">两种固定规格，分别说明</text><text class="small muted">保留小份和家庭两种规格，可修改名称、重量与提示。金额仅用于模拟，不付款。</text>
+      <view class="editor-row"><text class="product-title">小份规格</text><text class="field-label">规格名称</text><input class="input-box" maxlength="40" value="{{smallLabel}}" data-field="smallLabel" bindinput="field" disabled="{{processing}}"/><text class="field-label">数量或净重</text><input class="input-box" maxlength="80" value="{{smallWeight}}" data-field="smallWeight" bindinput="field" disabled="{{processing}}"/><text class="field-label">模拟价格（元，0.01–9999.99）</text><input class="input-box" type="digit" maxlength="10" value="{{smallPrice}}" data-field="smallPrice" bindinput="field" disabled="{{processing}}"/><text class="field-label">规格提示</text><textarea class="description-input editor-short" maxlength="200" value="{{smallHint}}" data-field="smallHint" bindinput="field" disabled="{{processing}}"/></view>
+      <view class="editor-row"><text class="product-title">家庭规格</text><text class="field-label">规格名称</text><input class="input-box" maxlength="40" value="{{familyLabel}}" data-field="familyLabel" bindinput="field" disabled="{{processing}}"/><text class="field-label">数量或净重</text><input class="input-box" maxlength="80" value="{{familyWeight}}" data-field="familyWeight" bindinput="field" disabled="{{processing}}"/><text class="field-label">模拟价格（元，0.01–9999.99）</text><input class="input-box" type="digit" maxlength="10" value="{{familyPrice}}" data-field="familyPrice" bindinput="field" disabled="{{processing}}"/><text class="field-label">规格提示</text><textarea class="description-input editor-short" maxlength="200" value="{{familyHint}}" data-field="familyHint" bindinput="field" disabled="{{processing}}"/></view>
+    </view>
+    <view class="surface">
+      <text class="eyebrow">03 / 商品资料卡</text><text class="heading">大小、口感和储存说明</text><text class="small muted">每条资料填写名称与内容；可删除不需要的条目，最多20条。内容仍为模拟，不代表真实检测。</text>
+      <view wx:for="{{facts}}" wx:key="rowKey" class="editor-row"><view class="section-title"><text class="product-title">资料 {{index + 1}}</text><button class="text-button" data-kind="facts" data-index="{{index}}" bindtap="removeRow" disabled="{{processing}}">删除</button></view><input class="input-box" maxlength="60" value="{{item.label}}" data-kind="facts" data-index="{{index}}" data-key="label" bindinput="rowField" placeholder="资料名称，如：果径" disabled="{{processing}}"/><textarea class="description-input editor-short" maxlength="300" value="{{item.value}}" data-kind="facts" data-index="{{index}}" data-key="value" bindinput="rowField" placeholder="资料内容，如：70–80mm（模拟）" disabled="{{processing}}"/></view>
+      <button class="secondary wide" data-kind="facts" bindtap="addRow" disabled="{{processing || facts.length >= 20}}">＋ 添加一条商品资料</button>
+      <text class="field-label">储存方法（最多1000字）</text><textarea class="description-input" maxlength="1000" value="{{storage}}" data-field="storage" bindinput="field" disabled="{{processing}}"/>
+      <text class="field-label">大小与规格说明（最多300字）</text><textarea class="description-input editor-short" maxlength="300" value="{{sizeNote}}" data-field="sizeNote" bindinput="field" disabled="{{processing}}"/>
     </view>
     <view class="surface media-editor">
-      <text class="eyebrow">商品素材</text><text class="heading">图片与采摘视频</text>
+      <text class="eyebrow">04 / 商品素材</text><text class="heading">图片与采摘视频</text>
       <text wx:if="{{isNew}}" class="note">请先点“先保存模拟草稿”，再上传图片或视频。新草稿暂不向买家展示。</text>
       <text class="body-copy">从相册选择或现场拍摄。当前用于模拟演示，请选有权使用的测试素材；内容由上传者提供，不代表平台已核实产地与品质。</text>
       <image wx:if="{{mediaImageUrl}}" class="media-editor-image" src="{{mediaImageUrl}}" mode="aspectFill" bindtap="previewMediaImage" binderror="mediaFailed"/>
@@ -30,21 +43,27 @@
       <view class="media-buttons"><button class="secondary" data-kind="video" bindtap="chooseMedia" disabled="{{isNew || processing || uploading}}">{{product.videoMediaId ? '更换采摘视频' : '上传采摘视频'}}</button><button class="text-button" bindtap="removeVideo" disabled="{{processing || uploading || !mediaVideoUrl}}">移除视频</button></view>
       <button wx:if="{{product.videoMediaId}}" class="text-button" data-kind="video" bindtap="refreshMediaPreview" loading="{{previewRefreshing === 'video'}}" disabled="{{processing || uploading || previewRefreshing}}">刷新视频预览</button>
       <text class="field-label">视频标题</text><input class="input-box" maxlength="120" value="{{videoTitle}}" data-field="videoTitle" bindinput="field" disabled="{{processing}}"/>
-      <text class="field-label">视频来源与内容说明</text><textarea class="description-input media-note-input" maxlength="500" value="{{videoNote}}" data-field="videoNote" bindinput="field" disabled="{{processing}}" placeholder="例如：自制模拟采摘演示，不代表真实供货；说明拍摄者与授权来源"/>
+      <text class="field-label">视频来源与内容说明</text><textarea class="description-input media-note-input" maxlength="1000" value="{{videoNote}}" data-field="videoNote" bindinput="field" disabled="{{processing}}" placeholder="例如：自制模拟采摘演示，不代表真实供货；说明拍摄者与授权来源"/>
       <view wx:if="{{uploading}}" class="media-upload-state"><text>{{uploadKind === 'image' ? '图片' : '视频'}}{{uploadPhase === 'verifying' ? '已传输100%，云端校验中…' : uploadPercent >= 0 ? '上传进度 ' + uploadPercent + '%' : '正在准备上传…'}}</text><progress wx:if="{{uploadPercent >= 0}}" percent="{{uploadPercent}}" activeColor="#28654b" stroke-width="6"/><text class="small muted">上传完成后，还需保存商品；请保持此页打开。</text><button class="secondary" bindtap="cancelUpload">取消上传</button></view>
       <text wx:if="{{mediaError}}" class="media-error">{{mediaError}}</text><button wx:if="{{mediaRetry && !uploading}}" class="secondary wide" bindtap="retryUpload" disabled="{{processing}}">重试上一次上传</button>
       <text wx:if="{{mediaStatus}}" class="body-copy">{{mediaStatus}}</text>
-      <text class="note">{{mediaDirty ? '素材尚未保存。保存商品并上架后，买家才能在其他手机或电脑上看到。' : '上传只暂存素材。点击保存商品并上架后，买家才能看到更新。'}}下架或草稿商品的素材仅供有权限的商家查看。</text>
+      <text class="note">{{mediaDirty ? '素材尚未保存。保存商品并上架后，买家才能在其他手机或电脑上看到。' : '上传只暂存素材。点击保存商品并上架后，买家才能看到更新。'}}草稿或下架商品不在买家商城展示；上传素材用于公开的商品演示，请勿上传私人资料。</text>
       <button wx:if="{{!isNew}}" class="primary wide" bindtap="saveProduct" loading="{{processing}}" disabled="{{processing || uploading}}">保存商品与素材</button>
     </view>
+    <view class="surface">
+      <text class="eyebrow">05 / 采收介绍</text><text class="heading">从田间到打包的过程</text><text class="small muted">可记录采摘、分拣、包装等步骤，最多12条。文字与视频一起说明，不把演示当作真实供货。</text>
+      <view wx:for="{{harvestSteps}}" wx:key="rowKey" class="editor-row"><view class="section-title"><text class="product-title">步骤 {{index + 1}}</text><button class="text-button" data-kind="harvestSteps" data-index="{{index}}" bindtap="removeRow" disabled="{{processing}}">删除</button></view><input class="input-box" maxlength="60" value="{{item.title}}" data-kind="harvestSteps" data-index="{{index}}" data-key="title" bindinput="rowField" placeholder="步骤标题" disabled="{{processing}}"/><textarea class="description-input" maxlength="1000" value="{{item.text}}" data-kind="harvestSteps" data-index="{{index}}" data-key="text" bindinput="rowField" placeholder="过程说明、产地介绍和模拟素材来源" disabled="{{processing}}"/></view>
+      <button class="secondary wide" data-kind="harvestSteps" bindtap="addRow" disabled="{{processing || harvestSteps.length >= 12}}">＋ 添加采收步骤</button>
+    </view>
+    <view class="surface editor-publish"><text class="heading">保存与展示状态</text><view class="info-row"><text>对买家上架</text><switch checked="{{published}}" disabled="{{isNew || processing || uploading}}" bindchange="published" color="#28654b"/></view><text class="small muted">新商品首次保存为草稿，可预览、上传素材和配置库存，再开启上架并保存。已有订单的资料快照不会被覆盖。</text><button class="primary wide" bindtap="saveProduct" loading="{{processing}}" disabled="{{processing || uploading}}">{{isNew ? '先保存模拟草稿' : '保存全部商品资料与素材'}}</button><button wx:if="{{!isNew}}" class="secondary wide" bindtap="previewSaved" disabled="{{processing || uploading}}">预览已保存商品</button></view>
     <view wx:if="{{!isNew}}" class="surface">
-      <text class="heading">模拟库存批次</text><text class="small muted">库存版本 {{inventory.version}}。未配置的商品可售份数为0，保存不会自动补满历史库存。</text>
-      <text class="field-label">小份装当前可售份数</text><input class="input-box" type="number" maxlength="15" value="{{smallStock}}" data-field="smallStock" bindinput="field"/>
-      <text class="field-label">家庭装当前可售份数</text><input class="input-box" type="number" maxlength="15" value="{{familyStock}}" data-field="familyStock" bindinput="field"/>
-      <text class="field-label">批次编号</text><input class="input-box" maxlength="80" value="{{batchCode}}" data-field="batchCode" bindinput="field"/>
-      <text class="field-label">采收日期（选填，YYYY-MM-DD）</text><input class="input-box" maxlength="10" value="{{harvestDate}}" data-field="harvestDate" bindinput="field"/>
-      <text class="field-label">批次说明</text><textarea class="description-input" maxlength="300" value="{{note}}" data-field="note" bindinput="field"/>
-      <text class="field-label">本次调整原因</text><input class="input-box" maxlength="200" value="{{reason}}" data-field="reason" bindinput="field"/>
+      <text class="eyebrow">06 / 单独保存库存</text><text class="heading">模拟库存批次</text><text class="small muted">库存版本 {{inventory.version}}。未配置的商品可售份数为0，保存不会自动补满历史库存。</text>
+      <text class="field-label">小份装当前可售份数</text><input class="input-box" type="number" maxlength="15" value="{{smallStock}}" data-field="smallStock" bindinput="field" disabled="{{processing}}"/>
+      <text class="field-label">家庭装当前可售份数</text><input class="input-box" type="number" maxlength="15" value="{{familyStock}}" data-field="familyStock" bindinput="field" disabled="{{processing}}"/>
+      <text class="field-label">批次编号</text><input class="input-box" maxlength="80" value="{{batchCode}}" data-field="batchCode" bindinput="field" disabled="{{processing}}"/>
+      <text class="field-label">采收日期（选填，YYYY-MM-DD）</text><input class="input-box" maxlength="10" value="{{harvestDate}}" data-field="harvestDate" bindinput="field" disabled="{{processing}}"/>
+      <text class="field-label">批次说明</text><textarea class="description-input" maxlength="300" value="{{note}}" data-field="note" bindinput="field" disabled="{{processing}}"/>
+      <text class="field-label">本次调整原因</text><input class="input-box" maxlength="200" value="{{reason}}" data-field="reason" bindinput="field" disabled="{{processing}}"/>
       <button class="primary wide" bindtap="saveStock" loading="{{processing}}" disabled="{{processing || uploading}}">保存模拟库存</button>
     </view>
     <button class="text-button wide" bindtap="reloadProduct" disabled="{{processing || uploading}}">重新读取已保存资料</button><button class="text-button wide" data-page="workbench" bindtap="go">返回商家工作台</button>

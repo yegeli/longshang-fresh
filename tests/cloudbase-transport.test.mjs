@@ -233,3 +233,32 @@ test('two CloudBase clients use the real shared handler for shopping, stock, ord
   await assert.rejects(a.market.getOrder(order.id), { status: 404 });
   assert.equal((await a.market.getShopping()).state.cart.length, 0);
 });
+
+test('native management record reads transport pagination and notes retain actor and version guards', async () => {
+  const f=runtime(),id='wechat:'+'a'.repeat(64),token='wxs_'+'b'.repeat(64);
+  f.storage.set(authKey(),{userId:id,token,expiresAt:expiry()});const market=createMarket(f.wx,settings());
+  let operator=session(id,{role:'admin',permissions:[],canManage:true});
+  f.wx.onCloud=options=>{
+    if(options.data.path==='/api/v1/session')return reply(options,operator);
+    if(options.data.path.endsWith('/note'))return reply(options,{order:{id:'DEMO-EXAMPLE',version:3,merchantNote:options.data.body.note}});
+    if(options.data.path==='/api/v1/admin/products/jingtai-apple')return reply(options,{product:{id:'jingtai-apple',status:'draft',version:2}});
+    return reply(options,{events:[],nextCursor:null});
+  };
+  assert.equal((await market.getManagementProduct('jingtai-apple')).product.status,'draft');
+  await market.getManagementProductHistory('jingtai-apple');
+  await market.getManagementInventoryHistory('jingtai-apple','YWJj');
+  await market.getWechatMerchantAudit('MERCHANT-EXAMPLE','ZGVm');
+  const note=await market.saveManagementOrderNote('DEMO-EXAMPLE',{expectedVersion:2,note:'模拟内部核对'},id);
+  assert.equal(note.order.version,3);
+  assert.ok(f.calls.some(call=>call.data.path==='/api/v1/admin/inventory/jingtai-apple/history?cursor=YWJj'));
+  assert.ok(f.calls.some(call=>call.data.path==='/api/v1/admin/wechat/merchants/MERCHANT-EXAMPLE/audit?cursor=ZGVm'));
+  const write=f.calls.find(call=>call.data.path.endsWith('/note'));assert.equal(write.data.method,'POST');assert.equal(write.data.expectedUserId,id);assert.deepEqual(write.data.body,{expectedVersion:2,note:'模拟内部核对'});
+  await assert.rejects(market.saveManagementOrderNote('DEMO-EXAMPLE',{expectedVersion:2,note:'不应发送'},'wechat:'+'f'.repeat(64)),{code:'stale_session'});
+  operator=session(id,{role:'merchant',permissions:['aftersales'],canManage:true});
+  await assert.rejects(market.saveManagementOrderNote('DEMO-EXAMPLE',{expectedVersion:2,note:'不应发送'},id),{code:'forbidden'});
+  await assert.rejects(market.getManagementProductHistory('jingtai-apple'),{code:'forbidden'});
+  await assert.rejects(market.getWechatMerchantAudit('MERCHANT-EXAMPLE'),{code:'forbidden'});
+  assert.equal(f.calls.filter(call=>call.data.path.endsWith('/note')).length,1);
+  operator=session(id,{role:'admin',permissions:[],canManage:true});
+  await assert.rejects(market.getManagementInventoryHistory('jingtai-apple','../bad'),{code:'cursor_invalid'});
+});

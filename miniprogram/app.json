@@ -1,10 +1,23 @@
 {
   "pages": [
-    "pages/home/index", "pages/regions/index", "pages/region/index",
-    "pages/shops/index", "pages/shop/index", "pages/product/index",
-    "pages/cart/index", "pages/checkout/index", "pages/orders/index",
-    "pages/order/index", "pages/aftersale/index", "pages/mine/index", "pages/guide/index",
-    "pages/workbench/index", "pages/manage-product/index", "pages/merchants/index"
+    "pages/home/index",
+    "pages/regions/index",
+    "pages/region/index",
+    "pages/shops/index",
+    "pages/shop/index",
+    "pages/product/index",
+    "pages/cart/index",
+    "pages/checkout/index",
+    "pages/orders/index",
+    "pages/order/index",
+    "pages/aftersale/index",
+    "pages/mine/index",
+    "pages/guide/index",
+    "pages/workbench/index",
+    "pages/manage-product/index",
+    "pages/merchants/index",
+    "pages/product-preview/index",
+    "pages/records/index"
   ],
   "window": {
     "navigationBarTitleText": "陇上鲜集",
@@ -20,10 +33,22 @@
     "backgroundColor": "#FFFFFF",
     "borderStyle": "white",
     "list": [
-      { "pagePath": "pages/home/index", "text": "逛好物" },
-      { "pagePath": "pages/regions/index", "text": "逛产区" },
-      { "pagePath": "pages/cart/index", "text": "购物车" },
-      { "pagePath": "pages/mine/index", "text": "我的" }
+      {
+        "pagePath": "pages/home/index",
+        "text": "逛好物"
+      },
+      {
+        "pagePath": "pages/regions/index",
+        "text": "逛产区"
+      },
+      {
+        "pagePath": "pages/cart/index",
+        "text": "购物车"
+      },
+      {
+        "pagePath": "pages/mine/index",
+        "text": "我的"
+      }
     ]
   },
   "style": "v2",

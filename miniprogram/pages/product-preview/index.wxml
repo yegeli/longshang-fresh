@@ -1,0 +1,21 @@
+<view class="screen preview-screen">
+  <view class="mode-banner">{{modeLabel}} · 商家预览</view>
+  <text class="page-title">已保存商品预览</text>
+  <view class="note">这里显示云端最近保存的商品。未保存的修改请返回编辑页保存后再查看。</view>
+  <view wx:if="{{loading}}" class="loading">正在核对账户并读取已保存商品…</view>
+  <view wx:if="{{error}}" class="error-box"><text>{{error}}</text><button class="text-button" bindtap="refresh">重新读取</button></view>
+  <view wx:if="{{!loading && !error && !allowed}}" class="surface"><text class="heading">当前账户无权预览此商品</text><text class="body-copy">请使用有商品权限的采购者账户，从商家工作台进入。</text><button class="secondary wide" data-page="mine" bindtap="go">返回我的</button></view>
+  <view wx:if="{{!loading && !error && allowed && product}}">
+    <view class="preview-status"><text class="status-tag">{{statusText}}</text><text class="small muted">已保存版本 {{product.version}}</text></view>
+    <text wx:if="{{product.status !== 'published'}}" class="note">此商品尚未向买家展示，仅供有管理权限的商家核对。</text>
+    <image class="detail-image preview-image" src="{{product.image}}" mode="aspectFill" bindtap="previewImage" binderror="imageFailed"/>
+    <text class="small muted media-caption">{{imageFallback ? '云端图片暂不可用，当前使用默认示意图' : product.imageMediaId ? '商家提供的演示图片 · 点击放大' : '默认示意图片 · 非景泰实拍'}}</text>
+    <text wx:if="{{imageError}}" class="note">图片暂不可用，可重新读取。文字资料仍可核对。</text>
+    <view class="surface"><text class="eyebrow">{{product.origin}}</text><text class="heading">{{product.name}}</text><text class="body-copy">{{product.subtitle}}</text><view class="chips"><text wx:for="{{product.tags}}" wx:key="*this" class="tag">{{item}}</text></view><text class="small muted">{{product.category === 'fruit' ? '水果' : product.category === 'dried' ? '干货特产' : '蔬菜粮食'}}</text></view>
+    <view class="surface"><text class="heading">规格与模拟价格</text><view wx:for="{{product.variants}}" wx:key="id" class="preview-variant"><view><text class="product-title">{{item.label}} · {{item.weight}}</text><text class="small muted">{{item.hint}}</text></view><text class="price">¥{{item.priceText}}</text><text class="small muted">当前可售 {{item.stock}} 份</text></view></view>
+    <view class="surface"><text class="heading">看看这份好物</text><text class="body-copy">{{product.summary}}</text><view wx:for="{{product.factRows}}" wx:key="rowKey" class="info-row"><text class="muted">{{item.label}}</text><text>{{item.value}}</text></view></view>
+    <view class="surface"><text class="heading">{{product.videoTitle || '采摘与产地视频'}}</text><video wx:if="{{video}}" class="harvest-video" src="{{video}}" controls show-center-play-btn object-fit="contain" binderror="videoFailed"/><view wx:elif="{{videoUnavailable}}" class="video-empty"><text>云端视频暂不可用</text><button class="text-button" bindtap="refresh">重新读取视频</button></view><view wx:else class="video-empty"><text>尚未保存采收视频</text><text class="small muted">返回编辑页上传并保存后可在此核对。</text></view><view wx:if="{{videoError}}" class="note"><text>视频暂时无法播放，请检查网络后重新读取。</text><button class="text-button" bindtap="refresh">重新读取</button></view><text class="field-label">来源与内容说明</text><text class="body-copy">{{product.videoNote || '暂无说明'}}</text><text class="small muted">当前为模拟素材，暂不代表真实景泰采摘或供货。</text><view wx:for="{{product.harvestSteps}}" wx:key="rowKey" class="harvest-step"><text class="step-number">{{index + 1}}</text><view><text class="product-title">{{item.title}}</text><text class="body-copy">{{item.text}}</text></view></view></view>
+    <view class="surface"><text class="heading">保存与批次</text><text class="body-copy">{{product.storage || '暂未填写储存说明'}}</text><text class="body-copy">{{product.sizeNote}}</text><text class="small muted">模拟批次：{{product.stock.batchCode || '尚未配置'}}</text><text wx:if="{{product.stock.harvestDate}}" class="small muted">采收日期：{{product.stock.harvestDate}}</text><text class="note">{{product.stock.note || '规格及品质说明均为模拟，不代表真实供货。'}}</text></view>
+  </view>
+  <button class="secondary wide" bindtap="backToEdit">返回商品编辑</button><view class="bottom-space"></view>
+</view>

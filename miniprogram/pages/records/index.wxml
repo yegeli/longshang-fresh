@@ -1,0 +1,12 @@
+<view class="screen"><view class="mode-banner">{{modeLabel}}</view><text class="page-title">{{title}}</text>
+  <view wx:if="{{loading}}" class="loading">正在核对权限和读取记录…</view>
+  <view wx:if="{{error}}" class="error-box"><text>{{error}}</text><button class="text-button" bindtap="refresh">重新读取与核对</button><button class="text-button" data-page="workbench" bindtap="go">返回商家工作台</button></view>
+  <view wx:if="{{!loading && allowed}}">
+    <view class="note">{{kind === 'product' ? '仅展示已保存的商品操作摘要，最多保留最近50条；历史图片和视频不在此重复播放。' : kind === 'inventory' ? '按时间从近到远展示真实保存的模拟库存变更；取消回库遇批次变化时，交采购者人工核对。' : '按时间从近到远展示采购者授权、权限和启停变更。'}}</view>
+    <text class="small muted">已加载 {{events.length}} 条记录 · 时间为北京时间</text>
+    <view wx:for="{{events}}" wx:key="id" class="surface record-card"><view class="section-title"><text class="heading">{{item.title}}</text><text wx:if="{{item.version}}" class="tag">版本 {{item.version}}</text></view><text class="small muted">{{item.time}}</text><text wx:if="{{item.description}}" class="body-copy">{{item.description}}</text><view wx:for="{{item.lines}}" wx:for-item="line" wx:key="label" class="record-change"><text class="field-label">{{line.label}}</text><text wx:if="{{line.before}}" class="record-before">原：{{line.before}}</text><text class="record-after">{{line.before ? '现：' : ''}}{{line.after}}</text></view><text wx:if="{{!item.lines.length}}" class="small muted">本次操作没有可展示的摘要字段变化。</text></view>
+    <view wx:if="{{!events.length}}" class="empty">暂无已保存的操作记录。已有商品不会补造历史记录。</view>
+    <view wx:if="{{moreError}}" class="error-box"><text>{{moreError}}</text><text class="small">已加载的记录保留，可以重试。</text></view><button wx:if="{{nextCursor}}" class="secondary wide" bindtap="more" loading="{{moreLoading}}" disabled="{{moreLoading}}">{{moreError ? '重试加载更多' : '加载更多记录'}}</button><text wx:elif="{{events.length}}" class="small muted record-end">已显示当前可读取的全部记录</text>
+    <button class="text-button wide" bindtap="refresh">刷新记录</button><button class="secondary wide" data-page="workbench" bindtap="go">返回商家工作台</button>
+  </view><view class="bottom-space"></view>
+</view>

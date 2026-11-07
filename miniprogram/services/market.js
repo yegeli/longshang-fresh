@@ -222,7 +222,7 @@ function createMarket(wxApi, settings) {
       return { order: record.order };
     });
   }
-  async function management(permission, path, method, data, accountId) {
+  async function management(permission, path, method, data, accountId, options) {
     if (!cloud) fail('cloud_only', '商家工作台需要已部署的云端服务，本机模拟不会授予管理权限。', 403);
     const revision = generation;
     const session = await market.getSession();
@@ -231,7 +231,7 @@ function createMarket(wxApi, settings) {
     if (method && method !== 'GET' && (!accountId || session.user.id !== accountId)) fail('stale_session', '账号已切换，请重新读取后操作。', 409);
     const permissions = Array.isArray(permission) ? permission : [permission];
     if (permission === 'admin' ? session.role !== 'admin' : session.role !== 'admin' && !(session.role === 'merchant' && permissions.some(value => (session.permissions || []).includes(value)))) fail('forbidden', '此账户没有所需管理权限。', 403);
-    return request(path, method, data);
+    return request(path, method, data, options);
   }
   const uploadMedia = createMediaUploader({ wxApi, request, getGeneration: () => generation,
     newKey: () => 'MEDIA-' + uuid(),
@@ -393,6 +393,10 @@ function createMarket(wxApi, settings) {
     async mockShipOrder(id, expectedVersion) { if (cloud) fail('mock_only', '云端订单需要有权限的商家在后台发货。', 403); return mutation(id, expectedVersion, 'ship'); },
     async mockResolveAfterSale(id, expectedVersion, reply) { if (cloud) fail('mock_only', '云端售后需要有权限的商家在后台处理。', 403); return mutation(id, expectedVersion, 'resolve', reply); },
     async getManagementProducts() { return management('products', '/api/v1/admin/products'); },
+    async getManagementProduct(id) { return management('products', '/api/v1/admin/products/' + encodeURIComponent(id)); },
+    async getManagementProductHistory(id, cursor) { return management('products', '/api/v1/admin/products/' + encodeURIComponent(id) + '/history', 'GET', undefined, undefined, cursor ? {cursor} : undefined); },
+    async getManagementInventoryHistory(id, cursor) { return management('products', '/api/v1/admin/inventory/' + encodeURIComponent(id) + '/history', 'GET', undefined, undefined, cursor ? {cursor} : undefined); },
+    async getWechatMerchantAudit(id, cursor) { return management('admin', '/api/v1/admin/wechat/merchants/' + encodeURIComponent(id) + '/audit', 'GET', undefined, undefined, cursor ? {cursor} : undefined); },
     async getManagementMedia(id, accountId) {
       if (!/^CLOUD-[A-F0-9-]{36}$/.test(id || '')) fail('media_invalid', '素材编号无效。');
       const revision = generation;
@@ -426,6 +430,7 @@ function createMarket(wxApi, settings) {
       }
       fail('pagination_limit', '订单历史过多，请联系管理员。');
     },
+    async saveManagementOrderNote(id, input, accountId) { return management('orders', '/api/v1/admin/orders/' + encodeURIComponent(id) + '/note', 'POST', input, accountId); },
     async shipManagementOrder(id, input, accountId) { return management('orders', '/api/v1/admin/orders/' + encodeURIComponent(id) + '/ship', 'POST', input, accountId); },
     async resolveManagementAfterSale(id, input, accountId) { return management('aftersales', '/api/v1/admin/orders/' + encodeURIComponent(id) + '/aftersale/resolve', 'POST', input, accountId); },
     async listWechatMerchants() { return management('admin', '/api/v1/admin/wechat/merchants'); },

@@ -209,3 +209,29 @@ test('order cleanup removes only current environment recovery markers and leaves
   assert.deepEqual(r.storage.get('longshang-mini-pending:' + namespaceB), marker);
   assert.deepEqual(r.storage.get('longshang-mini-cleanup:' + namespaceB), [order.id]);
 });
+
+test('home search always uses the complete catalogue and preserves active filters on refresh', async () => {
+  const r=runtime(),home=await open(r,'home');
+  home.input({detail:{value:'苹果'}});home.search();assert.equal(home.data.products[0].id,'jingtai-apple');
+  home.input({detail:{value:'土豆'}});home.search();assert.equal(home.data.products.length,1);assert.equal(home.data.products[0].id,'potato');
+  await home.onShow();assert.equal(home.data.products.length,1);assert.equal(home.data.appliedKeyword,'土豆');
+  home.input({detail:{value:'  '}});home.search();assert.equal(home.data.products.length,6);
+  home.chooseCategory(event({id:'fruit'}));assert.equal(home.data.products.length,2);
+  home.input({detail:{value:'景泰 苹果'}});home.search();assert.equal(home.data.products.length,1);
+  home.input({detail:{value:'不存在'}});home.search();assert.equal(home.data.products.length,0);
+  home.all();assert.equal(home.data.products.length,6);assert.equal(home.data.filtered,false);
+});
+
+test('shop category, search and stock filters remain scoped to that shop and recover from no results', async () => {
+  const r=runtime(),getStorefront=r.market.getStorefront.bind(r.market);
+  r.market.getStorefront=async()=>{const value=await getStorefront();value.shops[0].productIds=['jingtai-apple','goji'];return value;};
+  const shop=await open(r,'shop',{id:'shop-native-demo'});assert.equal(shop.data.products.length,2);
+  shop.input({detail:{value:'土豆'}});shop.search();assert.equal(shop.data.products.length,0);
+  shop.input({detail:{value:'枸杞'}});shop.search();assert.equal(shop.data.products[0].id,'goji');
+  shop.all();shop.chooseCategory(event({id:'fruit'}));assert.equal(shop.data.products[0].id,'jingtai-apple');
+  const data=r.storage.get('longshang-native-mock-v1');data.inventories['jingtai-apple'].stocks={small:0,family:0};r.storage.set('longshang-native-mock-v1',data);
+  await shop.onShow();shop.toggleStock({detail:{value:true}});assert.equal(shop.data.products.length,0);
+  shop.chooseCategory(event({id:'all'}));assert.equal(shop.data.products[0].id,'goji');
+  await shop.onShow();assert.equal(shop.data.inStock,true);assert.equal(shop.data.products.length,1);
+  shop.all();assert.equal(shop.data.products.length,2);assert.equal(shop.data.count,2);
+});
