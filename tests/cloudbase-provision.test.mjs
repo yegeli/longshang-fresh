@@ -19,9 +19,23 @@ function fixture({operator=true}={}) {
   const config={WECHAT_APP_ID:APPID,CLOUDBASE_ENV_ID:ENV_ID,...(operator?{PROVISION_OPERATOR_ACCOUNT_ID:account('operator')}:{})};
   const context={APPID,OPENID:'operator',ENV:ENV_ID};
   const state={memory,tables,calls,config,context,hook:null,dbCalls:0,managerCreations:0,created:[],indexWrites:[],runtimeWrites:[],runtimeInfo:{FunctionName:'longshang-market',Timeout:3,Status:'Active',MemorySize:128,Role:'PRIVATE_ROLE',Environment:{Variables:[{Key:'PRIVATE_KEY',Value:'SECRET_TOKEN'}]},CodeInfo:'PRIVATE_CODE'},envInfo:{EnvInfo:{EnvId:ENV_ID,Databases:[{Status:'RUNNING',InstanceId:'tnt-example'}]}}};
+  // Model the SDK boundary: all real reads include _id, while doc.set may not
+  // write it, including a read/spread/set cycle inside a transaction.
+  const boundary=database=>({
+    collection(name){
+      const collection=database.collection(name),originalDoc=collection.doc.bind(collection);
+      collection.doc=id=>{
+        const d=originalDoc(id),set=d.set.bind(d);
+        d.set=async({data})=>{assert.equal(Object.hasOwn(data,'_id'),false,'SDK doc.set rejects the reserved _id field');state.documentWrites=(state.documentWrites||0)+1;return set({data});};
+        return d;
+      };
+      return collection;
+    },
+    commit:()=>database.commit(),rollback:()=>database.rollback()
+  });
   const db={
     collection(name){assert.ok(manifest.collections.includes(name),'No nonmanifest collection access');state.dbCalls++;const collection=memory.collection(name);const originalDoc=collection.doc.bind(collection);collection.doc=id=>{const d=originalDoc(id);const get=d.get.bind(d);d.get=async()=>{if(!tables.has(name))throw Object.assign(Error('missing collection'),{code:'DATABASE_COLLECTION_NOT_EXIST'});return get();};return d;};collection.count=async()=>({total:memory.dump(name).length});return collection;},
-    startTransaction:()=>memory.startTransaction()
+    startTransaction:async()=>boundary(await memory.startTransaction())
   };
   const common={async call(request){
     const {Action,Param}=request;calls.push(copy(request));await state.hook?.(request);
@@ -123,6 +137,10 @@ test('runtime provider failures retain only sanitized action and error code with
   const result=await f.invoke({operation:'runtime-configure',apply:true});assert.equal(result.status,503);assert.equal(result.body.error.operation,action);assert.equal(result.body.error.providerCode,'UnauthorizedOperation.CAM');assert.ok(!/SECRET_TOKEN|PRIVATE|headers|Authorization/.test(JSON.stringify(result)));assert.equal(f.dbCalls,0);
  }
 });
+test('confirmed SDK INVALID_PARAM is preserved as a fixed error category without provider text',async()=>{
+ const f=fixture();f.hook=async()=>{throw Object.assign(Error('SECRET_TOKEN cannot write _id'),{code:'INVALID_PARAM'});};
+ const result=await f.invoke({operation:'runtime-inspect'});assert.equal(result.status,503);assert.equal(result.body.error.providerCode,'INVALID_PARAM');assert.ok(!/SECRET_TOKEN|cannot write|stack/.test(JSON.stringify(result)));
+});
 test('default inspection is read-only and metadata is atomically locked before checkpoints exist',async()=>{
  const f=fixture();let r=await f.invoke();assert.equal(r.body.ready,false);assert.equal(r.body.dryRun,true);assert.equal(f.calls.length,0);assert.equal(f.tables.size,0);
  r=await f.invoke(apply);assert.equal(r.body.ready,false);assert.deepEqual(f.created,['lsf_meta']);assert.equal(f.memory.dump().length,0);assert.equal(f.calls[0].Action,'CreateTable');
@@ -135,6 +153,13 @@ test('bounded calls finish exactly the manifest, then separate final receipts pe
  for(const name of manifest.collections){assert.equal(state.receipts[name].acl.roundId,state.roundId);assert.equal(state.receipts[name].rule.manifestHash,manifestHash);assert.ok(state.receipts[name].structure);}
  for(const item of manifest.indexes)assert.ok(state.receipts[item.collection]['indexDefinitionVerified:'+indexName(item)]);
  const written=f.indexWrites.length;assert.equal((await f.invoke(apply)).body.ready,true);assert.equal((await f.invoke()).body.ready,true);assert.equal(f.indexWrites.length,written);assert.equal(f.memory.dump().length,2);
+});
+test('real SDK document ids never become checkpoint payload during lease acquisition, completion or renewed verification',async()=>{
+ const f=fixture();await f.invoke(apply);await f.invoke(apply);
+ assert.equal(f.marker('provision-state')._id,markerKey('provision-state'),'Fixture reads include the actual database id');
+ const resumed=await f.invoke(apply);assert.equal(resumed.status,200);assert.ok(f.documentWrites>=3);
+ await complete(f);f.advance(VERIFY_WINDOW_MS+1);assert.equal((await f.invoke(apply)).status,200);await complete(f);
+ for(const row of f.memory.dump())assert.equal(Object.hasOwn(row.data,'_id'),false,'Reserved field is not persisted as application data');
 });
 test('unknown metadata and nonempty existing collections are never silently adopted',async()=>{
  const meta=fixture();meta.addTable('lsf_meta',{acl:'PRIVATE'});assert.equal((await meta.invoke(apply)).body.error.code,'collection_permission_unsafe');assert.equal(meta.memory.dump().length,0);

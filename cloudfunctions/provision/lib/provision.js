@@ -34,6 +34,7 @@ function validateIndexes(collection, info) {
 }
 function providerCode(error) {
   const code = error && error.code;
+  if (code === 'INVALID_PARAM') return code;
   return typeof code === 'string' && /^(UnauthorizedOperation|FailedOperation|InternalError|InvalidParameter|InvalidParameterValue|MissingParameter|ResourceNotFound|ResourceUnavailable|LimitExceeded|AuthFailure|RequestLimitExceeded|UnsupportedOperation)(\.[A-Za-z][A-Za-z0-9]{0,40}){0,3}$/.test(code) ? code : 'provider_error';
 }
 const missingCollection = error => ['ResourceNotFound.Table','ResourceNotFound','DATABASE_COLLECTION_NOT_EXIST',-502005].includes(error?.code) || error?.errCode === -502005;
@@ -60,7 +61,11 @@ function createProvision({getContext,getConfig,createManager,getDatabase,now=()=
    if(JSON.stringify(manifest.collections)!==JSON.stringify(COLLECTION_NAMES)||manifest.clientRules.read!==false||manifest.clientRules.write!==false||manifest.indexes.some(item=>!COLLECTION_NAMES.includes(item.collection)))reject(503,'manifest_invalid','部署集合清单无效。');
    const appId=config.WECHAT_APP_ID,envId=config.CLOUDBASE_ENV_ID,apply=event.operation==='provision'&&event.apply===true;
    const db=getDatabase(),doc=(database,name)=>database.collection(META).doc(markerKey(name));
-   const read=async(database,name)=>{const result=await doc(database,name).get();return (Array.isArray(result.data)?result.data[0]:result.data)||null;};
+   // Database _id belongs to the document reference, not our checkpoint data.
+   // Both ordinary and transaction reads may include it; set rejects writing it.
+   const clean=value=>{const {_id,...data}=value;return data;};
+   const read=async(database,name)=>{const result=await doc(database,name).get(),value=Array.isArray(result.data)?result.data[0]:result.data;return value?clean(value):null;};
+   const write=(database,name,data)=>doc(database,name).set({data:clean(data)});
    const tx=async action=>{const t=await db.startTransaction();try{const value=await action(t);await t.commit();return value;}catch(error){await t.rollback().catch(()=>{});throw error;}};
    let state,metaMissing=false;
    try{state=await step('ReadCheckpoint',META,()=>read(db,'provision-state'));}catch(error){if(!missingCollection(error))throw error;metaMissing=true;}
@@ -92,14 +97,14 @@ function createProvision({getContext,getConfig,createManager,getDatabase,now=()=
     if(!Number.isSafeInteger(count.total)||count.total<0)reject(409,'collection_count_unknown','无法确认 META 是否为空。');
     if(count.total&&!isReady(marker))reject(409,'collection_data_unknown','已有 META 数据归属无法确认；未接管。');
     const initial={...base,roundId:randomUUID(),version:1,phase:'prepare',cursor:0,action:'describe',indexCursor:0,ownedCollections:isReady(marker)?Object.fromEntries(COLLECTION_NAMES.map(name=>[name,true])):{[META]:true},receipts:{},owner:null,leaseUntil:0};
-    state=await step('CreateCheckpoint',META,()=>tx(async t=>{const previous=await read(t,'provision-state');if(previous)reject(409,'provision_busy','另一调用已开始初始化，请重试。');await doc(t,'provision-state').set({data:initial});if(marker)await doc(t,'provision-ready').set({data:{...marker,ready:false}});return initial;}));
+    state=await step('CreateCheckpoint',META,()=>tx(async t=>{const previous=await read(t,'provision-state');if(previous)reject(409,'provision_busy','另一调用已开始初始化，请重试。');await write(t,'provision-state',initial);if(marker)await write(t,'provision-ready',{...marker,ready:false});return initial;}));
     return reply(state);
    }
    if(state.phase==='complete'){
     if(!isReady(marker))reject(409,'verification_incomplete','已完成状态缺少有效就绪标记。');
     if(now()-Date.parse(marker.verifiedAt)<=VERIFY_WINDOW_MS)return {status:200,body:{ready:true,needsRetry:false,dryRun:false,manifestHash,verificationSnapshot:true,verifiedAt:marker.verifiedAt,progress:{phase:'complete',version:state.version}}};
     if(now()-startedAt>=INVOCATION_BUDGET_MS)return reply(state,{reason:'time_budget'});
-    const reset=await step('RestartVerification',META,()=>tx(async t=>{const current=await read(t,'provision-state');if(!validState(current,appId,envId)||current.version!==state.version)reject(409,'provision_busy','初始化进度已变化。');const fresh={...current,phase:'verify',roundId:randomUUID(),cursor:0,indexCursor:0,action:'acl',receipts:{},owner:null,leaseUntil:0,version:current.version+1,verificationStartedAt:new Date(now()).toISOString()};await doc(t,'provision-state').set({data:fresh});await doc(t,'provision-ready').set({data:{...marker,ready:false}});return fresh;}));
+    const reset=await step('RestartVerification',META,()=>tx(async t=>{const current=await read(t,'provision-state');if(!validState(current,appId,envId)||current.version!==state.version)reject(409,'provision_busy','初始化进度已变化。');const fresh={...current,phase:'verify',roundId:randomUUID(),cursor:0,indexCursor:0,action:'acl',receipts:{},owner:null,leaseUntil:0,version:current.version+1,verificationStartedAt:new Date(now()).toISOString()};await write(t,'provision-state',fresh);await write(t,'provision-ready',{...marker,ready:false});return fresh;}));
     return reply(reset,{reason:'verification_snapshot_expired'});
    }
    if(now()-startedAt>=INVOCATION_BUDGET_MS)return reply(state,{reason:'time_budget'});
@@ -115,7 +120,7 @@ function createProvision({getContext,getConfig,createManager,getDatabase,now=()=
     const writeAction=claimed.action==='create-write'?'create-recover':claimed.action==='index-write'?'index-recover':null;
     if(writeAction)claimed={...claimed,action:writeAction};
     if(claimedWork==='index-write')claimed.mutation={collection:collectionOrder[claimed.cursor],indexId:indexName(manifest.indexes.filter(item=>item.collection===collectionOrder[claimed.cursor])[claimed.indexCursor]),attemptedAt:new Date(now()).toISOString(),acknowledged:false};
-    await doc(t,'provision-state').set({data:claimed});return claimed;
+    await write(t,'provision-state',claimed);return claimed;
    }));
    const target=collectionOrder[state.cursor],wanted=manifest.indexes.filter(item=>item.collection===target),work=claimedWork;
    let next={...state};
@@ -165,8 +170,8 @@ function createProvision({getContext,getConfig,createManager,getDatabase,now=()=
    return await finish(next);
    async function finish(value,extra={},ready=false){
     return step('SaveCheckpoint',META,()=>tx(async t=>{const current=await read(t,'provision-state');if(!validState(current,appId,envId)||current.owner!==owner||current.version!==state.version||current.leaseUntil<=now())reject(409,'provision_lease_lost','本次调用租约已结束，请重新调用恢复。');
-     const saved={...value,owner:null,leaseUntil:0,version:current.version+1};await doc(t,'provision-state').set({data:saved});
-     if(ready){const prior=await read(t,'provision-ready');if(prior&&!matchesMarker(prior,appId,envId))reject(409,'project_marker_conflict','就绪标记归属发生变化。');await doc(t,'provision-ready').set({data:{...base,id:'provision-ready',ready:true,verifiedAt:saved.completedAt,verificationStartedAt:saved.verificationStartedAt,verificationMode:'sequential_snapshot',roundId:saved.roundId}});}
+     const saved={...value,owner:null,leaseUntil:0,version:current.version+1};await write(t,'provision-state',saved);
+     if(ready){const prior=await read(t,'provision-ready');if(prior&&!matchesMarker(prior,appId,envId))reject(409,'project_marker_conflict','就绪标记归属发生变化。');await write(t,'provision-ready',{...base,id:'provision-ready',ready:true,verifiedAt:saved.completedAt,verificationStartedAt:saved.verificationStartedAt,verificationMode:'sequential_snapshot',roundId:saved.roundId});}
      return reply(saved,{...extra,ready,needsRetry:!ready,...(ready?{verifiedAt:saved.completedAt,verificationSnapshot:true}:{})});
     }));
    }
