@@ -233,6 +233,21 @@ function createMarket(wxApi, settings) {
     if (permission === 'admin' ? session.role !== 'admin' : session.role !== 'admin' && !(session.role === 'merchant' && permissions.some(value => (session.permissions || []).includes(value)))) fail('forbidden', '此账户没有所需管理权限。', 403);
     return request(path, method, data, options);
   }
+  async function support(mode, suffix, method = 'GET', data, accountId) {
+    if (!cloudbase) fail('cloudbase_only', '客服咨询需要微信云端版本，请使用已配置的云端预览。', 403);
+    if (!['buyer', 'merchant'].includes(mode)) fail('support_mode_invalid', '咨询入口无效，请重新进入。');
+    const path = '/api/v1/' + (mode === 'merchant' ? 'admin/' : '') + 'support/threads' + suffix;
+    if (mode === 'merchant') return management('aftersales', path, method, data, accountId);
+    const revision = generation, session = await market.getSession();
+    if (revision !== generation) fail('stale_session', '账号已切换，请重新读取咨询。', 409);
+    if (!session.user) fail('sign_in_required', '请先使用微信登录后咨询。', 401);
+    if (method !== 'GET' && (!accountId || session.user.id !== accountId)) fail('stale_session', '账号已切换，请重新读取咨询。', 409);
+    return request(path, method, data);
+  }
+  function supportId(id) {
+    if (typeof id !== 'string' || !/^SUPPORT-[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$/.test(id)) fail('support_id_invalid', '咨询编号无效，请重新进入。');
+    return '/' + id;
+  }
   const uploadMedia = createMediaUploader({ wxApi, request, getGeneration: () => generation,
     newKey: () => 'MEDIA-' + uuid(),
     checkIdentity(accountId, revision) {
@@ -294,6 +309,7 @@ function createMarket(wxApi, settings) {
     imageFor(product) { return cloudbase ? mediaUrl(product, 'image') || this.assetUrl(product && product.image) : cloud && product && product.imageMediaId ? this.assetUrl('/api/v1/media/' + product.imageMediaId) : this.assetUrl(product && product.image); },
     videoFor(product) { return cloudbase ? mediaUrl(product, 'video') : cloud && product && product.videoMediaId ? this.assetUrl('/api/v1/media/' + product.videoMediaId) : ''; },
     uploadProductMedia(input) { return uploadMedia(input); },
+    uploadShopImage(input) { return uploadMedia({...input, kind: 'image'}); },
     async getCatalog() { return cloud ? request('/api/v1/products', 'GET', undefined, { public: true }) : { products: clone(PRODUCTS), updatedAt: null }; },
     async getInventory() { return cloud ? request('/api/v1/inventory', 'GET', undefined, { public: true }) : { inventories: Object.values(readMock().inventories), updatedAt: null }; },
     async getStorefront() {
@@ -393,6 +409,20 @@ function createMarket(wxApi, settings) {
     async mockShipOrder(id, expectedVersion) { if (cloud) fail('mock_only', '云端订单需要有权限的商家在后台发货。', 403); return mutation(id, expectedVersion, 'ship'); },
     async mockResolveAfterSale(id, expectedVersion, reply) { if (cloud) fail('mock_only', '云端售后需要有权限的商家在后台处理。', 403); return mutation(id, expectedVersion, 'resolve', reply); },
     async getManagementProducts() { return management('products', '/api/v1/admin/products'); },
+    async getManagementShop() {
+      if (!cloudbase) fail('cloudbase_only', '店铺资料管理需要微信云端版本。', 403);
+      return management('products', '/api/v1/admin/shop');
+    },
+    async saveManagementShop(shop, expectedVersion, accountId) {
+      if (!cloudbase) fail('cloudbase_only', '店铺资料管理需要微信云端版本。', 403);
+      return management('products', '/api/v1/admin/shop', 'PUT', {shop, expectedVersion}, accountId);
+    },
+    async listSupportThreads(mode = 'buyer') { return support(mode, ''); },
+    async getSupportThread(id, mode = 'buyer') { return support(mode, supportId(id)); },
+    async createSupportThread(input, accountId) { return support('buyer', '', 'POST', input, accountId); },
+    async sendSupportMessage(id, input, mode, accountId) { return support(mode, supportId(id) + '/messages', 'POST', input, accountId); },
+    async markSupportRead(id, input, mode, accountId) { return support(mode, supportId(id) + '/read', 'POST', input, accountId); },
+    async setSupportStatus(id, input, mode, accountId) { return support(mode, supportId(id) + '/status', 'POST', input, accountId); },
     async getManagementProduct(id) { return management('products', '/api/v1/admin/products/' + encodeURIComponent(id)); },
     async getManagementProductHistory(id, cursor) { return management('products', '/api/v1/admin/products/' + encodeURIComponent(id) + '/history', 'GET', undefined, undefined, cursor ? {cursor} : undefined); },
     async getManagementInventoryHistory(id, cursor) { return management('products', '/api/v1/admin/inventory/' + encodeURIComponent(id) + '/history', 'GET', undefined, undefined, cursor ? {cursor} : undefined); },

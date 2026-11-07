@@ -17,8 +17,10 @@ function createMediaUploader({ wxApi, request, authorize, checkIdentity, getGene
       checkIdentity(input.expectedUserId, revision);
     };
     const operation = (async () => {
+      const productTarget = input && /^[a-z0-9][a-z0-9-]{1,63}$/.test(input.productId || '') && input.shopId === undefined;
+      const shopTarget = input && /^shop-[a-f0-9]{24}$/.test(input.shopId || '') && input.productId === undefined && input.kind === 'image';
       if (!input || !TYPES[input.kind] || !TYPES[input.kind].includes(input.mimeType)
-        || typeof input.filePath !== 'string' || !input.filePath || !/^[a-z0-9][a-z0-9-]{1,63}$/.test(input.productId || '')
+        || typeof input.filePath !== 'string' || !input.filePath || !(productTarget || shopTarget)
         || !Number.isSafeInteger(input.size) || input.size < 1 || input.size > (input.kind === 'image' ? 5 : 20) * 1024 * 1024)
         throw failure('media_invalid', '请选择5MB以内的JPG、PNG、WebP图片，或20MB以内的MP4视频。');
       if (input.kind === 'video' && (!Number.isFinite(input.duration) || input.duration <= 0 || input.duration > 120))
@@ -26,7 +28,8 @@ function createMediaUploader({ wxApi, request, authorize, checkIdentity, getGene
       guard(); await authorize(input.expectedUserId); guard();
       if (!wxApi.getFileSystemManager) throw failure('media_runtime_missing', '当前微信无法读取所选文件，请升级微信后重试。');
       const fs = wxApi.getFileSystemManager();
-      const identity = [input.expectedUserId, input.productId, input.kind, input.filePath, input.size, input.mimeType].join('|');
+      const target = productTarget ? {productId: input.productId} : {shopId: input.shopId};
+      const identity = [input.expectedUserId, productTarget ? 'product' : 'shop', input.productId || input.shopId, input.kind, input.filePath, input.size, input.mimeType].join('|');
       attemptIdentity = identity;
       let key = attempts.get(identity);
       if (!key) { key = newKey(); attempts.set(identity, key); if (attempts.size > 20) attempts.delete(attempts.keys().next().value); }
@@ -39,7 +42,7 @@ function createMediaUploader({ wxApi, request, authorize, checkIdentity, getGene
           throw error;
         }
       };
-      const ticket = await call('/api/v1/admin/media/uploads', { productId: input.productId, kind: input.kind,
+      const ticket = await call('/api/v1/admin/media/uploads', { ...target, kind: input.kind,
         contentType: input.mimeType, size: input.size, source: input.source || '商家上传的模拟演示素材，非真实景泰采摘记录。', idempotencyKey: key });
       if (!MEDIA_ID.test(ticket.mediaId || '')) throw failure('response_invalid', '云端上传编号无效。');
       const base = '/api/v1/admin/media/' + ticket.mediaId;

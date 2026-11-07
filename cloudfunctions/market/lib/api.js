@@ -8,8 +8,10 @@ const {createCommerce}=require('./commerce');
 const {createMerchants}=require('./merchants');
 const {requireReady}=require('./readiness');
 const {createMedia}=require('./media');
+const {createShops}=require('./shops');
+const {createSupport}=require('./support');
 function createMarketApi({store,getContext,env={},now=()=>new Date().toISOString(),storage}) {
- const auth=createAuth({store,env,now}),media=createMedia({store,auth,now,env,storage}),catalog=createCatalog({store,auth,now,media}),commerce=createCommerce({store,auth,now}),merchants=createMerchants({store,auth,now});
+ const auth=createAuth({store,env,now}),media=createMedia({store,auth,now,env,storage}),shops=createShops({store,auth,now,media}),support=createSupport({store,auth,now}),catalog=createCatalog({store,auth,now,media,shops}),commerce=createCommerce({store,auth,now}),merchants=createMerchants({store,auth,now});
  return async function market(event) {
   try {
    const chunkRequest=typeof event?.path==='string'&&/^\/api\/v1\/admin\/media\/CLOUD-[A-F0-9-]{36}\/chunks$/.test(event.path)&&event.method==='POST';
@@ -24,7 +26,7 @@ function createMarketApi({store,getContext,env={},now=()=>new Date().toISOString
    // These handlers authorize every private read and re-authorize all writes
    // inside the same transaction as business changes. A stale cached role never
    // authorizes an operation; only trusted wx context establishes identity.
-   for(const handler of [media.handle,catalog.handle,merchants.handle,commerce.shopping,commerce.orders]){const result=await handler(ctx);if(result!==null)return result?.status&&result?.body?result:{status:200,body:result};}
+   for(const handler of [media.handle,shops.handle,support.handle,catalog.handle,merchants.handle,commerce.shopping,commerce.orders]){const result=await handler(ctx);if(result!==null)return result?.status&&result?.body?result:{status:200,body:result};}
    fail(404,'not_found','云端接口不存在。');
   } catch(error) {if(error instanceof MarketError)return {status:error.status,body:{error:{code:error.code,message:error.message}}};return {status:503,body:{error:{code:'cloudbase_unavailable',message:'云端暂时不可用，本次操作未确认；请保留提交编号后重试。'}}};}
  };

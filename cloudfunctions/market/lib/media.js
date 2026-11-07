@@ -2,6 +2,7 @@
 const {randomUUID,randomBytes}=require('node:crypto');
 const {digest,fail,MarketError}=require('./store');
 const C=require('./common');
+const {shopIdFor,profileKey,SHOP_ID}=require('./shops');
 const ID=/^CLOUD-[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}$/;
 const KEY=/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const TYPES={image:new Set(['image/jpeg','image/png','image/webp']),video:new Set(['video/mp4'])};
@@ -36,17 +37,18 @@ function createMedia({store,auth,now,env,storage}) {
  }
  function own(row,user){if(!row||user.role!=='admin'&&row.ownerId!==user.id)fail(404,'not_found','素材不存在或当前账号无权访问。');return row;}
  async function authorized(docs,event,caller,write=false){const user=await auth.identity(docs,event,caller,true,write);C.requirePermission(user,'products');return user;}
- async function owned(docs,id,user){const row=own(await docs.get('meta',mediaKey(id)),user);C.ownProduct(await docs.get('products',row.productId),user);return row;}
+ async function owned(docs,id,user){const row=own(await docs.get('meta',mediaKey(id)),user);if(row.targetKind==='shop'){if(row.shopId!==shopIdFor(row.ownerId))fail(404,'not_found','店铺素材不存在。');const owner=await docs.get('users',row.ownerId);if(!owner||owner.appId!==user.appId)fail(404,'not_found','店铺素材不存在。');}else {if(row.targetKind&&row.targetKind!=='product')fail(404,'not_found','素材目标无效。');C.ownProduct(await docs.get('products',row.productId),user);}return row;}
  async function issue(ctx) {
-  const {body,event,caller}=ctx;C.V.fields(body,['productId','kind','contentType','size','source','idempotencyKey']);
-  if(!C.V.PRODUCT_ID.test(body.productId)||!TYPES[body.kind]?.has(body.contentType)||!Number.isSafeInteger(body.size)||body.size<1)fail(400,'media_invalid','请提供有效商品、文件类型和大小。');
+  const {body,event,caller}=ctx;C.V.fields(body,['productId','shopId','kind','contentType','size','source','idempotencyKey']);
+  const isShop=body.shopId!==undefined;if(isShop?body.productId!==undefined||!SHOP_ID.test(body.shopId)||body.kind!=='image':!C.V.PRODUCT_ID.test(body.productId))fail(400,'media_invalid','请选择一款有效商品或本店图片。');
+  if(!TYPES[body.kind]?.has(body.contentType)||!Number.isSafeInteger(body.size)||body.size<1)fail(400,'media_invalid','请提供有效商品、文件类型和大小。');
   if(body.size>LIMITS[body.kind])fail(413,'media_too_large',body.kind==='image'?'图片最大5MiB。':'视频最大20MiB。');
   const source=C.V.text(body,'source',200,true);if(!KEY.test(body.idempotencyKey||''))fail(400,'idempotency_invalid','上传提交编号无效。');
-  const time=now(),ms=Date.parse(time),id='CLOUD-'+randomUUID().toUpperCase(),fingerprint=digest(JSON.stringify({productId:body.productId,kind:body.kind,contentType:body.contentType,size:body.size,source}));
-  const row=await store.transaction(async tx=>{const user=await authorized(tx,event,caller,true),product=C.ownProduct(await tx.get('products',body.productId),user),requestKey='media-request:'+digest(user.id+'\0'+body.idempotencyKey),previous=await tx.get('meta',requestKey);
+  const time=now(),ms=Date.parse(time),id='CLOUD-'+randomUUID().toUpperCase(),fingerprint=digest(JSON.stringify({...(isShop?{shopId:body.shopId}:{productId:body.productId}),kind:body.kind,contentType:body.contentType,size:body.size,source}));
+  const row=await store.transaction(async tx=>{const user=await authorized(tx,event,caller,true);let ownerId,target;if(isShop){if(body.shopId!==shopIdFor(user.id))fail(404,'not_found','只能上传本店图片。');ownerId=user.id;target={targetKind:'shop',shopId:body.shopId};}else {const product=C.ownProduct(await tx.get('products',body.productId),user);ownerId=product.ownerId;target={targetKind:'product',productId:product.id};}const requestKey='media-request:'+digest(user.id+'\0'+body.idempotencyKey),previous=await tx.get('meta',requestKey);
    if(previous){if(previous.fingerprint!==fingerprint)fail(409,'idempotency_conflict','上传编号已用于其他素材，请重新选择。');const existing=await owned(tx,previous.mediaId,user);if(existing.state==='ready')return existing;if(Date.parse(existing.expiresAt)<=ms||existing.state==='failed')fail(409,'media_upload_expired','此上传已失效，请重新选择素材。');return existing;}
    const rateKey='media-rate:'+user.id,rate=await tx.get('meta',rateKey),hour=Math.floor(ms/3600000),day=Math.floor(ms/86400000),hourCount=rate?.hour===hour?rate.hourCount+1:1,dayCount=rate?.day===day?rate.dayCount+1:1;if(hourCount>20||dayCount>100)fail(429,'media_rate_limited','本账号上传次数达到当前演示限额，请稍后再试。');
-   const value={id,ownerId:product.ownerId,uploadedBy:user.id,productId:product.id,kind:body.kind,contentType:body.contentType,size:body.size,source,state:'pending',everBound:false,createdAt:time,expiresAt:new Date(ms+MEDIA_TTL).toISOString(),chunks:{},attempts:0};await tx.set('meta',mediaKey(id),value);await tx.set('meta',requestKey,{mediaId:id,fingerprint});await tx.set('meta',rateKey,{hour,day,hourCount,dayCount});return value;
+   const value={id,ownerId,uploadedBy:user.id,...target,kind:body.kind,contentType:body.contentType,size:body.size,source,state:'pending',everBound:false,createdAt:time,expiresAt:new Date(ms+MEDIA_TTL).toISOString(),chunks:{},attempts:0};await tx.set('meta',mediaKey(id),value);await tx.set('meta',requestKey,{mediaId:id,fingerprint});await tx.set('meta',rateKey,{hour,day,hourCount,dayCount});return value;
   });
   if(row.state==='ready')return dto(row);
   return {mediaId:row.id,state:'pending',kind:row.kind,chunkSize:CHUNK_SIZE,chunkCount:Math.ceil(row.size/CHUNK_SIZE),uploadedChunks:Object.keys(row.chunks).map(Number),expiresAt:row.expiresAt};
@@ -94,12 +96,22 @@ function createMedia({store,auth,now,env,storage}) {
  }
  async function bind(docs,product,ownerId) {
   if(product.imageMediaId||product.videoMediaId)await ready(docs);
-  for(const [field,kind] of [['imageMediaId','image'],['videoMediaId','video']])if(product[field]){const row=await docs.get('meta',mediaKey(product[field]));if(!row||row.state!=='ready'||row.kind!==kind||row.ownerId!==ownerId||row.productId!==product.id)fail(403,'media_binding_invalid','请使用此商品所属采购者已上传并校验完成的素材。');
+  for(const [field,kind] of [['imageMediaId','image'],['videoMediaId','video']])if(product[field]){const row=await docs.get('meta',mediaKey(product[field]));if(!row||row.state!=='ready'||row.kind!==kind||row.ownerId!==ownerId||row.targetKind&&row.targetKind!=='product'||row.productId!==product.id)fail(403,'media_binding_invalid','请使用此商品所属采购者已上传并校验完成的素材。');
    // Cancel and first binding must write the same media document under actual
    // snapshot isolation. Only explicitly new and never-bound objects are
    // deletable; missing historical state is deliberately treated as retained.
    if(row.everBound!==true)await docs.set('meta',mediaKey(row.id),{...row,everBound:true});
   }
+ }
+ async function bindShop(docs,profile,ownerId){
+  if(!profile.imageMediaId)return;await ready(docs);
+  const row=await docs.get('meta',mediaKey(profile.imageMediaId));
+  if(!row||row.state!=='ready'||row.kind!=='image'||row.targetKind!=='shop'||row.ownerId!==ownerId||row.shopId!==profile.id)fail(403,'media_binding_invalid','请使用本店已上传并校验完成的店铺图片。');
+  if(row.everBound!==true)await docs.set('meta',mediaKey(row.id),{...row,everBound:true});
+ }
+ async function shopDTO(profile,ownerId){
+  const value={...profile};if(!value.imageMediaId)return value;
+  try{await ready();const row=await store.get('meta',mediaKey(value.imageMediaId));if(!row||row.state!=='ready'||row.kind!=='image'||row.targetKind!=='shop'||row.ownerId!==ownerId||row.shopId!==value.id)throw Error('Shop image unavailable');const urls=await storage.urls([row.fileId],URL_AGE);if(!urls[row.fileId])throw Error('Shop image unavailable');value.imageUrl=urls[row.fileId];value.imageExpiresAt=new Date(Date.parse(now())+URL_AGE*1000).toISOString();return value;}catch{return {...value,mediaUnavailable:true};}
  }
  async function productDTOs(rows) {
   const fallback=rows.map(row=>{const value=C.productDTO(row);if(value.imageMediaId||value.videoMediaId)value.mediaUnavailable=true;return value;});
@@ -108,7 +120,7 @@ function createMedia({store,auth,now,env,storage}) {
   // inventory. It never yields raw file IDs or broadens private read access.
   try {
    await ready();const values=[],files=[];
-   for(const row of rows){const value=C.productDTO(row);for(const [field,urlField,kind] of [['imageMediaId','imageUrl','image'],['videoMediaId','videoUrl','video']])if(value[field]){const media=await store.get('meta',mediaKey(value[field]));if(media?.state==='ready'&&media.ownerId===row.ownerId&&media.productId===row.id&&media.kind===kind){files.push(media.fileId);value[urlField]=media.fileId;}else value.mediaUnavailable=true;}values.push(value);}
+   for(const row of rows){const value=C.productDTO(row);for(const [field,urlField,kind] of [['imageMediaId','imageUrl','image'],['videoMediaId','videoUrl','video']])if(value[field]){const media=await store.get('meta',mediaKey(value[field]));if(media?.state==='ready'&&(!media.targetKind||media.targetKind==='product')&&media.ownerId===row.ownerId&&media.productId===row.id&&media.kind===kind){files.push(media.fileId);value[urlField]=media.fileId;}else value.mediaUnavailable=true;}values.push(value);}
    const urls=await storage.urls([...new Set(files)],URL_AGE);for(const value of values){for(const field of ['imageUrl','videoUrl'])if(value[field])value[field]=urls[value[field]];value.mediaExpiresAt=new Date(Date.parse(now())+URL_AGE*1000).toISOString();if(value.imageUrl)value.imageExpiresAt=value.mediaExpiresAt;if(value.videoUrl)value.videoExpiresAt=value.mediaExpiresAt;}return values;
   }catch{return fallback;}
  }
@@ -117,11 +129,11 @@ function createMedia({store,auth,now,env,storage}) {
   const request=path==='/admin/media/uploads',match=/^\/(admin\/)?media\/([^/]+)(?:\/(complete|chunks|cancel))?$/.exec(path),orderMatch=/^\/(admin\/)?orders\/([^/]+)\/media\/([^/]+)$/.exec(path);
   if(!request&&!match&&!orderMatch)return null;await ready();
   if(request){C.requireMethod(method,'POST');return issue(ctx);}
-  if(orderMatch){C.requireMethod(method,'GET');const [,admin,orderId,id]=orderMatch;if(!C.V.ORDER_ID.test(orderId)||!ID.test(id))fail(404,'not_found','素材不存在。');const user=await auth.identity(store,event,caller),order=C.ownOrder(await store.get('orders',orderId),user,!!admin),row=await store.get('meta',mediaKey(id));if(!row||row.state!=='ready'||row.kind!=='image'||row.ownerId!==order.sellerId||!order.data.items?.some(i=>i.productId===row.productId&&i.imageMediaId===id))fail(404,'not_found','订单中没有此图片。');return dto(row);}
+  if(orderMatch){C.requireMethod(method,'GET');const [,admin,orderId,id]=orderMatch;if(!C.V.ORDER_ID.test(orderId)||!ID.test(id))fail(404,'not_found','素材不存在。');const user=await auth.identity(store,event,caller),order=C.ownOrder(await store.get('orders',orderId),user,!!admin),row=await store.get('meta',mediaKey(id));if(!row||row.state!=='ready'||row.kind!=='image'||row.targetKind&&row.targetKind!=='product'||row.ownerId!==order.sellerId||!order.data.items?.some(i=>i.productId===row.productId&&i.imageMediaId===id))fail(404,'not_found','订单中没有此图片。');return dto(row);}
   const [,admin,id,action]=match;if(!ID.test(id))fail(404,'not_found','素材不存在。');
   if(admin){if(action){C.requireMethod(method,'POST');return action==='chunks'?chunk(ctx,id):action==='cancel'?cancel(ctx,id):complete(ctx,id);}C.requireMethod(method,'GET');const user=await authorized(store,event,caller),row=await owned(store,id,user);if(row.state!=='ready')fail(409,'media_upload_incomplete','素材尚未上传完成。');return dto(row);}
-  C.requireMethod(method,'GET');if(action)fail(404,'not_found','素材不存在。');const row=await store.get('meta',mediaKey(id)),product=row?await store.get('products',row.productId):null;if(!row||row.state!=='ready'||!product||product.ownerId!==row.ownerId||product.status!=='published'||product.product[row.kind==='image'?'imageMediaId':'videoMediaId']!==id||!await C.sellerVisible(store,product.ownerId,caller.appId))fail(404,'not_found','素材不存在或尚未发布。');return dto(row);
+  C.requireMethod(method,'GET');if(action)fail(404,'not_found','素材不存在。');const row=await store.get('meta',mediaKey(id));if(row?.targetKind==='shop'){const profile=await store.get('meta',profileKey(row.ownerId));if(row.state!=='ready'||row.kind!=='image'||row.shopId!==shopIdFor(row.ownerId)||profile?.imageMediaId!==id||!await C.sellerVisible(store,row.ownerId,caller.appId))fail(404,'not_found','店铺素材不存在或尚未发布。');const products=await C.allProducts(store,{ownerId:row.ownerId});if(!products.some(product=>product.status==='published'))fail(404,'not_found','店铺尚无公开商品。');return dto(row);}const product=row?await store.get('products',row.productId):null;if(!row||row.state!=='ready'||row.targetKind&&row.targetKind!=='product'||!product||product.ownerId!==row.ownerId||product.status!=='published'||product.product[row.kind==='image'?'imageMediaId':'videoMediaId']!==id||!await C.sellerVisible(store,product.ownerId,caller.appId))fail(404,'not_found','素材不存在或尚未发布。');return dto(row);
  }
- return {handle,bind,productDTOs};
+ return {handle,bind,bindShop,productDTOs,shopDTO};
 }
 module.exports={createMedia,validateBytes,ID,LIMITS,mediaKey,CHUNK_SIZE};

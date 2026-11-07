@@ -1,0 +1,22 @@
+<view class="screen conversation-screen">
+ <view class="mode-banner">{{modeLabel}}</view>
+ <view class="section-title"><text class="page-title">{{serviceMode === 'merchant' ? '回复买家咨询' : '咨询采购者'}}</text><button class="text-button" bindtap="refresh" disabled="{{loading || sending || processing}}">刷新</button></view>
+ <view wx:if="{{loading}}" class="loading">正在读取云端消息…</view>
+ <view wx:if="{{error}}" class="error-box"><text>{{error}}</text><button class="text-button" bindtap="refresh">重新读取</button></view>
+ <view wx:if="{{mode !== 'cloud'}}" class="surface"><text class="heading">请使用云端版本咨询</text><text class="body-copy">本机模拟不创建客服消息。云端版本支持买家提问、采购者回复和跨设备查看。</text><button class="secondary wide" data-page="guide" bindtap="go">查看体验指南</button></view>
+ <view wx:elif="{{!loading && !error && !allowed}}" class="surface"><text class="heading">{{needLogin ? '登录后继续咨询' : '当前账户无权查看这条咨询'}}</text><text wx:if="{{needLogin}}" class="body-copy">登录后仍会保留你当前选择的商品、店铺或订单。</text><button wx:if="{{needLogin}}" class="primary wide" bindtap="login" loading="{{processing}}" disabled="{{processing}}">微信登录</button><button class="text-button wide" data-page="mine" bindtap="go">返回我的</button></view>
+ <view wx:if="{{allowed && !loading}}">
+  <view class="surface conversation-context"><text class="tag">{{context.kind === 'product' ? '商品咨询' : context.kind === 'order' ? '订单咨询' : '店铺咨询'}}</text><text class="heading">{{context.title}}</text><text wx:if="{{thread}}" class="small muted">{{thread.statusText}} · 消息时间为北京时间</text><text wx:else class="small muted">发送第一条问题后建立咨询，消息保存在云端。</text><text class="body-copy">当前用于模拟咨询，不付款。点击刷新查看最新回复。</text></view>
+  <view wx:if="{{readWarning || unreadHint || syncWarning}}" class="note"><text wx:if="{{readWarning}}">{{readWarning}}</text><text wx:if="{{unreadHint}}">{{unreadHint}}</text><text wx:if="{{syncWarning}}">{{syncWarning}}</text></view>
+  <view wx:for="{{messages}}" wx:key="id" class="message-row {{item.own ? 'own-message' : ''}}"><view class="message-meta"><text>{{item.senderLabel}}</text><text>{{item.time}}</text></view><view class="message-bubble"><text selectable="{{true}}">{{item.text}}</text></view></view>
+  <view wx:if="{{!messages.length}}" class="conversation-welcome"><text class="heading">这份好物，先问清楚</text><text class="body-copy">可以问规格大小、采收安排、包装和模拟配送。这里不会生成订单。</text></view>
+  <view wx:if="{{thread && thread.canManage}}" class="conversation-status-actions"><button wx:if="{{thread.status === 'open'}}" class="text-button" data-status="closed" bindtap="changeStatus" disabled="{{sending || processing}}">结束这条咨询</button><button wx:elif="{{thread.canReopen}}" class="secondary wide" data-status="open" bindtap="changeStatus" disabled="{{sending || processing}}">重新开启咨询</button></view>
+  <button class="text-button wide" bindtap="inbox">返回{{serviceMode === 'merchant' ? '店铺客服' : '我的咨询'}}</button>
+ </view><view class="conversation-bottom"></view>
+ <view wx:if="{{allowed && !loading}}" class="conversation-composer">
+  <text wx:if="{{sendError}}" class="message-error">{{sendError}}</text><text wx:if="{{pending}}" class="small muted">上条发送尚待核对，重试会沿用同一条消息，不重复创建。</text>
+  <text wx:if="{{thread && !thread.canReply}}" class="small muted">{{pending ? '上次发送尚待核对，可先重试原条；发送新内容需重新开启。' : '咨询已结束，可在消息下方重新开启后继续提问。'}}</text>
+  <textarea class="conversation-input" value="{{text}}" maxlength="600" bindinput="input" placeholder="{{serviceMode === 'merchant' ? '回复买家的模拟咨询…' : '写下想了解的问题…'}}" disabled="{{sending || processing || pending || (thread && !thread.canReply)}}" adjust-position="{{true}}"/>
+  <view class="composer-actions"><text class="small muted">{{text.length}} / 600</text><button wx:if="{{pending}}" class="text-button" bindtap="discardPending" disabled="{{sending || processing}}">放弃重试</button><button class="primary" bindtap="send" loading="{{sending}}" disabled="{{sending || processing || !text || (thread && !thread.canReply && !pending)}}">{{pending ? '核对并重试本条' : serviceMode === 'merchant' ? '发送回复' : '发送咨询'}}</button></view>
+ </view>
+</view>

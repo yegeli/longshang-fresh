@@ -33,6 +33,7 @@ page({
     }catch(error){if(current()){this.setData(emptyLists());this._noteDirty=false;}throw error;}
   },
   recompute(patch){const next={...this.data,...patch};this.setData({...patch,...project(next)});},
+  support(){if(this.data.allowed&&this.data.canAfter)wx.navigateTo({url:'/pages/support/index?mode=merchant'});},
   chooseTab(e){const tab=e.currentTarget.dataset.tab;if(this._busy||!({products:this.data.canProducts,orders:this.data.canOrders,after:this.data.canAfter})[tab])return;this.recompute({tab,selected:null,note:'',noteVersion:0,error:''});this._noteDirty=false;},
   search(e){const field={products:'productQuery',orders:'orderQuery',after:'afterQuery'}[this.data.tab];if(field)this.recompute({[field]:e.detail.value});},
   filter(e){const field={products:'productFilter',orders:'orderFilter',after:'afterFilter'}[this.data.tab];if(field)this.recompute({[field]:e.currentTarget.dataset.value});},

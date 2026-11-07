@@ -262,3 +262,31 @@ test('native management record reads transport pagination and notes retain actor
   operator=session(id,{role:'admin',permissions:[],canManage:true});
   await assert.rejects(market.getManagementInventoryHistory('jingtai-apple','../bad'),{code:'cursor_invalid'});
 });
+
+test('native consultation and shop services enforce sides, permissions and originating actor',async()=>{
+ const f=runtime(),id='wechat:'+'a'.repeat(64),thread='SUPPORT-00000000-0000-4000-8000-000000000001';
+ f.storage.set(authKey(),{userId:id,token:'wxs_'+'a'.repeat(64),expiresAt:expiry()});let role='buyer',permissions=[];
+ f.wx.onCloud=o=>reply(o,o.data.path==='/api/v1/session'?session(id,{role,permissions,canManage:role!=='buyer'}):{threads:[],thread:{id:thread},shop:{id:'shop-'+'a'.repeat(24)}});
+ const market=createMarket(f.wx,settings());
+ await market.listSupportThreads();await market.createSupportThread({context:{kind:'product',id:'jingtai-apple'},text:'模拟咨询',idempotencyKey:'NATIVE-support-key'},id);
+ assert.equal(f.calls.at(-1).data.path,'/api/v1/support/threads');assert.equal(f.calls.at(-1).data.expectedUserId,id);
+ const before=f.calls.length;await assert.rejects(market.getSupportThread('../admin/shop'),{code:'support_id_invalid'});assert.equal(f.calls.length,before);
+ await assert.rejects(market.listSupportThreads('administrator'),{code:'support_mode_invalid'});
+ await assert.rejects(market.listSupportThreads('merchant'),{code:'forbidden'});
+ await assert.rejects(market.createSupportThread({},'wechat:'+'b'.repeat(64)),{code:'stale_session'});
+ role='merchant';permissions=['aftersales'];await market.listSupportThreads('merchant');assert.equal(f.calls.at(-1).data.path,'/api/v1/admin/support/threads');
+ await market.sendSupportMessage(thread,{text:'模拟回复',idempotencyKey:'NATIVE-reply-key'},'merchant',id);assert.equal(f.calls.at(-1).data.path,'/api/v1/admin/support/threads/'+thread+'/messages');
+ await market.markSupportRead(thread,{lastReadSeq:2},'buyer',id);assert.equal(f.calls.at(-1).data.path,'/api/v1/support/threads/'+thread+'/read');
+ await market.setSupportStatus(thread,{status:'closed',expectedVersion:2},'merchant',id);assert.equal(f.calls.at(-1).data.body.expectedVersion,2);
+ await assert.rejects(market.getManagementShop(),{code:'forbidden'});
+ permissions=['products'];await market.getManagementShop();await market.saveManagementShop({name:'模拟店铺'},2,id);assert.deepEqual(f.calls.at(-1).data.body,{shop:{name:'模拟店铺'},expectedVersion:2});
+ await assert.rejects(market.listSupportThreads('merchant'),{code:'forbidden'});await assert.rejects(market.saveManagementShop({},2,'other'),{code:'stale_session'});
+ const local=createMarket(runtime().wx,{mode:'mock'});await assert.rejects(local.listSupportThreads(),{code:'cloudbase_only'});await assert.rejects(local.getManagementShop(),{code:'cloudbase_only'});
+});
+test('late consultation reads are rejected after logout instead of exposing the previous account messages',async()=>{
+ const f=runtime(),id='wechat:'+'c'.repeat(64),thread='SUPPORT-00000000-0000-4000-8000-000000000001';
+ f.storage.set(authKey(),{userId:id,token:'wxs_'+'c'.repeat(64),expiresAt:expiry()});let pending;
+ f.wx.onCloud=o=>{if(o.data.path==='/api/v1/session')return reply(o,session(id));if(o.data.path.endsWith('/logout'))return reply(o,{signedOut:true});pending=o;};
+ const market=createMarket(f.wx,settings()),read=market.getSupportThread(thread);const checked=assert.rejects(read,{code:'stale_session'});await flush();assert.ok(pending);await market.logout();reply(pending,{thread:{id:thread,messages:[{text:'old account mock'}]}});await checked;
+ assert.equal(f.storage.has(MOCK_KEY),false);
+});

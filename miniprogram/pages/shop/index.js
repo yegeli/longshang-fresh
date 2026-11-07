@@ -6,8 +6,9 @@ page({
     const [directory,catalog,stock]=await Promise.all([market.getStorefront(),market.getCatalog(),market.getInventory()]);
     const shop=directory.shops.find(s=>s.id===this._query.id);if(!shop)throw Error('这个店铺暂时不存在。');
     const allProducts=catalog.products.filter(p=>shop.productIds.includes(p.id)).map(p=>productView(p,stock.inventories));
-    return {shop,allProducts,...filter.view(allProducts,this.data)};
+    return {shop:{...shop,image:market.imageFor(shop)},allProducts,...filter.view(allProducts,this.data)};
   },
+  consult(){if(this.data.shop&&!this.data.shop.preview)wx.navigateTo({url:'/pages/conversation/index?mode=buyer&shopId='+encodeURIComponent(this.data.shop.id)});},
   applyFilters(){this.setData(filter.view(this.data.allProducts,this.data));},
   input(e){this.setData({keyword:e.detail.value});},
   search(){this.setData({appliedKeyword:this.data.keyword.trim()});this.applyFilters();},

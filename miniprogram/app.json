@@ -17,7 +17,10 @@
     "pages/manage-product/index",
     "pages/merchants/index",
     "pages/product-preview/index",
-    "pages/records/index"
+    "pages/records/index",
+    "pages/support/index",
+    "pages/conversation/index",
+    "pages/manage-shop/index"
   ],
   "window": {
     "navigationBarTitleText": "陇上鲜集",

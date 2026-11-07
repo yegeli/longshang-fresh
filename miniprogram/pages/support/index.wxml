@@ -1,0 +1,16 @@
+<view class="screen support-screen">
+ <view class="mode-banner">{{modeLabel}}</view>
+ <view class="section-title"><text class="page-title">{{serviceMode === 'merchant' ? '店铺客服' : '我的咨询'}}</text><button class="text-button" bindtap="refresh" disabled="{{loading}}">刷新消息</button></view>
+ <text class="body-copy">{{serviceMode === 'merchant' ? '回复买家的商品、店铺和订单问题。' : '问问规格、采收和配送，回复会保存在这里。'}}当前用于模拟咨询，不付款。</text>
+ <view wx:if="{{loading}}" class="loading">正在读取云端咨询…</view>
+ <view wx:if="{{error}}" class="error-box"><text>{{error}}</text><button class="text-button" bindtap="refresh">重新读取</button></view>
+ <view wx:if="{{mode !== 'cloud'}}" class="surface"><text class="heading">客服需要云端版本</text><text class="body-copy">本机模拟不创建客服消息。请使用云端小程序预览体验买家咨询和商家回复。</text><button class="secondary wide" data-page="guide" bindtap="go">查看体验指南</button></view>
+ <view wx:elif="{{!loading && !error && !allowed}}" class="surface"><text class="heading">{{needLogin ? '登录后查看自己的咨询' : '当前账户没有店铺客服权限'}}</text><button wx:if="{{needLogin}}" class="primary wide" bindtap="login" loading="{{processing}}" disabled="{{processing}}">微信登录</button><button class="text-button wide" data-page="mine" bindtap="go">返回我的</button></view>
+ <view wx:if="{{allowed && !loading}}">
+  <view class="support-total"><text class="heading">{{unreadCount}} 条未读消息</text><text class="small muted">进入咨询后标为已读，刷新可查看最新回复。</text></view>
+  <view class="search-line"><input value="{{query}}" maxlength="80" bindinput="search" placeholder="搜索商品、店铺或咨询内容"/></view>
+  <view class="filters support-filters"><button class="filter {{filter === 'all' ? 'active' : ''}}" data-value="all" bindtap="chooseFilter">全部</button><button class="filter {{filter === 'unread' ? 'active' : ''}}" data-value="unread" bindtap="chooseFilter">未读</button><button class="filter {{filter === 'open' ? 'active' : ''}}" data-value="open" bindtap="chooseFilter">咨询中</button><button class="filter {{filter === 'closed' ? 'active' : ''}}" data-value="closed" bindtap="chooseFilter">已结束</button></view>
+  <view wx:for="{{visibleThreads}}" wx:key="id" class="surface support-thread" data-id="{{item.id}}" bindtap="openThread"><view class="section-title"><text class="tag">{{item.contextLabel}}</text><text wx:if="{{item.unreadCount}}" class="support-badge">{{item.unreadCount}} 条未读</text><text wx:else class="small muted">{{item.statusText}}</text></view><text class="heading">{{item.subject}}</text><text class="body-copy support-preview">{{item.lastMessage}}</text><view class="section-title"><text class="small muted">{{item.time}} · 北京时间</text><text class="text-link">查看 →</text></view></view>
+  <view wx:if="{{!visibleThreads.length}}" class="empty"><text>{{threads.length ? '暂无符合筛选条件的咨询。' : serviceMode === 'merchant' ? '暂时没有买家咨询。' : '还没有咨询，先从喜欢的商品、店铺或订单里问问吧。'}}</text><button wx:if="{{serviceMode === 'buyer'}}" class="secondary" data-page="home" bindtap="go">去逛好物</button></view>
+ </view><view class="bottom-space"></view>
+</view>

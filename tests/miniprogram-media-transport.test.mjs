@@ -72,3 +72,16 @@ test('CloudBase views display short signed URLs, fall back after expiry, and hyd
   await assert.rejects(market.getManagementMedia(id,'wechat:'+'f'.repeat(64)),{code:'stale_session'});
   assert.equal([...storage.keys()].length,1);
 });
+
+test('shop image transport uses its own target, never product fields, and retains exact retry identity',async()=>{
+ const f=fixture(),{productId,...base}=f.input,shopId='shop-'+'a'.repeat(24),input={...base,shopId};
+ f.state.failIndex=3;await assert.rejects(f.upload(input).promise,{code:'network_error'});await tick();f.state.failIndex=null;
+ await f.upload(input).promise;
+ assert.equal(f.keys[0],f.keys[1]);const tickets=f.calls.filter(c=>c.path.endsWith('/uploads'));
+ assert.ok(tickets.every(c=>c.body.shopId===shopId&&!('productId' in c.body)));assert.equal(f.state.completed,1);
+});
+test('media transport rejects mixed shop and product targets and any shop video before IO',async()=>{
+ for(const extra of [{shopId:'shop-'+'a'.repeat(24)},{productId:undefined,shopId:'shop-'+'a'.repeat(24),kind:'video',mimeType:'video/mp4',duration:5},{productId:undefined,shopId:'shop-forged'}]){
+  const f=fixture();await assert.rejects(f.upload({...f.input,...extra}).promise,{code:'media_invalid'});assert.equal(f.calls.length,0);assert.equal(f.state.read,0);
+ }
+});

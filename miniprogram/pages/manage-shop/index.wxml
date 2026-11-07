@@ -1,0 +1,23 @@
+<view class="screen shop-editor">
+ <view class="mode-banner">{{modeLabel}}</view><text class="page-title">把家乡介绍给买家</text><text class="body-copy">店铺名称、介绍和图片会保存在云端，其他设备重新进入即可看到更新。</text>
+ <view wx:if="{{loading}}" class="loading">正在核对店铺与管理权限…</view>
+ <view wx:if="{{error}}" class="error-box"><text>{{error}}</text><button class="text-button" bindtap="reload" disabled="{{processing || uploading}}">重新读取与核对</button></view>
+ <view wx:if="{{!loading && !allowed}}" class="surface"><text class="heading">请使用有商品管理权限的采购者账号</text><button class="secondary wide" data-page="mine" bindtap="go">前往我的</button></view>
+ <view wx:if="{{!loading && allowed && shop}}">
+  <view class="surface"><text class="tag">{{shop.regionLabel}}</text><text class="heading">{{shop.procurementName}}</text><text class="small muted">已保存版本 {{shop.version}} · 负责地区由平台管理员分配</text><text wx:if="{{dirty}}" class="note">有未保存的修改，保存后才会展示给买家。</text><button class="primary wide" bindtap="save" loading="{{processing}}" disabled="{{processing || uploading}}">保存店铺资料</button></view>
+  <view class="surface"><text class="eyebrow">01 / 店铺介绍</text><text class="field-label">店铺名称（最多60字）</text><input class="input-box" value="{{name}}" data-field="name" bindinput="field" maxlength="60" disabled="{{processing}}"/>
+   <text class="field-label">店铺介绍（最多2000字）</text><textarea class="description-input" value="{{description}}" data-field="description" bindinput="field" maxlength="2000" disabled="{{processing}}" placeholder="介绍负责的产区、模拟特产和挑选方式"/>
+   <text class="field-label">咨询与服务说明（最多500字）</text><textarea class="description-input short-input" value="{{serviceNote}}" data-field="serviceNote" bindinput="field" maxlength="500" disabled="{{processing}}" placeholder="例如：可以咨询规格与储存方法；人工回复，请稍后回来查看。"/>
+  </view>
+  <view class="surface"><text class="eyebrow">02 / 店铺图片</text><image class="shop-cover" src="{{previewUrl}}" mode="aspectFill" bindtap="previewImage" binderror="imageFailed"/><text class="small muted">{{imageMediaId ? '采购者提供的模拟店铺图片' : '默认示意图片，非景泰实拍'}} · 点击放大</text>
+   <text wx:if="{{imageError}}" class="note">图片暂时无法显示，可刷新图片预览；未保存的介绍会保留。</text>
+   <button class="secondary wide" bindtap="chooseImage" disabled="{{processing || uploading}}">{{imageMediaId ? '更换店铺图片' : '上传店铺图片'}}</button>
+   <view class="image-actions"><button class="text-button" bindtap="useDefault" disabled="{{processing || uploading}}">使用默认示意图</button><button wx:if="{{imageMediaId}}" class="text-button" bindtap="refreshImage" loading="{{refreshingImage}}" disabled="{{processing || uploading || refreshingImage}}">刷新图片预览</button></view>
+   <view wx:if="{{uploading}}" class="note"><text>{{uploadPhase === 'verifying' ? '上传完成，正在校验图片…' : uploadPercent >= 0 ? '上传进度 ' + uploadPercent + '%' : '正在准备上传…'}}</text><progress wx:if="{{uploadPercent >= 0}}" percent="{{uploadPercent}}" activeColor="#28654b" stroke-width="6"/><button class="text-button" bindtap="cancelUpload">暂停上传</button></view>
+   <text wx:if="{{mediaError}}" class="media-error">{{mediaError}}</text><button wx:if="{{mediaRetry && !uploading}}" class="secondary wide" bindtap="retryUpload" disabled="{{processing}}">重试图片上传</button><text wx:if="{{mediaStatus}}" class="body-copy">{{mediaStatus}}</text>
+   <text class="small muted">支持JPEG、PNG、WebP，最大5 MiB。请使用有权展示的模拟素材，不上传私人证件或客户资料。</text>
+  </view>
+  <view class="note">店铺有上架商品后，介绍与图片才会出现在买家入口。只展示模拟资料，不代表平台已核实货源、品质或合作。</view>
+  <button class="primary wide" bindtap="save" loading="{{processing}}" disabled="{{processing || uploading}}">保存店铺资料</button><button class="secondary wide" bindtap="viewShop" disabled="{{processing || uploading}}">查看已保存的店铺</button><button class="text-button wide" bindtap="reload" disabled="{{processing || uploading}}">重新读取云端资料</button>
+ </view><button class="text-button wide" data-page="workbench" bindtap="go">返回商家工作台</button><view class="bottom-space"></view>
+</view>

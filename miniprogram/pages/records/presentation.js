@@ -2,7 +2,7 @@ const {dateTime}=require('../../services/display-time');
 const text=value=>typeof value==='string'?value:'';
 const status=value=>({published:'已上架',draft:'草稿',offline:'已下架',enabled:'已启用',disabled:'已停用'})[value]||'未记录';
 const money=value=>Number.isSafeInteger(value)?'¥'+(value/100).toFixed(2):'未记录';
-const permission=value=>(Array.isArray(value)?value:[]).map(v=>({products:'商品与库存',orders:'订单发货',aftersales:'售后处理'})[v]).filter(Boolean).join('、')||'无管理权限';
+const permission=value=>(Array.isArray(value)?value:[]).map(v=>({products:'商品与库存',orders:'订单发货',aftersales:'售后与客服'})[v]).filter(Boolean).join('、')||'无管理权限';
 const time=value=>dateTime(value,true)||'未记录具体时间';
 function viewEvent(kind,event){
   const before=event.before||{},after=event.after||{},lines=[];

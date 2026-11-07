@@ -4,7 +4,7 @@ const {BASE_CATALOG}=require('./model.cjs');
 const {buildStorefront}=require('./storefront.cjs');
 const {appendProductHistory,readProductHistory}=require('./product-history');
 const C=require('./common');
-function createCatalog({store,auth,now,media}) {
+function createCatalog({store,auth,now,media,shops}) {
  async function visibleCatalog(docs,appId) {const rows=await C.allProducts(docs,{status:'published'}),cache=new Map(),visible=[];for(const row of rows){if(!cache.has(row.ownerId))cache.set(row.ownerId,await C.sellerVisible(docs,row.ownerId,appId));if(cache.get(row.ownerId))visible.push(row);}return visible;}
  async function handle(ctx) {
   const {path,method,body,event,caller,url}=ctx;
@@ -12,7 +12,7 @@ function createCatalog({store,auth,now,media}) {
    C.requireMethod(method,'GET');const rows=await visibleCatalog(store,caller.appId),updatedAt=rows.reduce((v,r)=>r.updatedAt>v?r.updatedAt:v,'')||null;
    if(path==='/products')return {products:await media.productDTOs(rows),updatedAt};
    if(path==='/inventory'){const inventories=[];for(const row of rows)inventories.push(C.inventoryDTO(await store.get('inventory',row.id),row.id));return {inventories,updatedAt};}
-   const definitions=[];for(const id of [...new Set(rows.map(r=>r.ownerId))]){const u=await store.get('users',id),m=u?.merchantId?await store.get('merchants',id):null;definitions.push({id:'shop-'+digest(id).slice(0,24),name:m?.name||'景泰采购演示店',procurementName:m?.name||'平台采购者（模拟）',regionLabel:m?.region||'甘肃 · 景泰',description:'模拟采购者资料。商品货源、价格与履约均用于开发验证。'});}return buildStorefront(await media.productDTOs(rows),definitions,updatedAt);
+   const definitions=[];for(const id of [...new Set(rows.map(r=>r.ownerId))]){if(shops)definitions.push(await shops.definitionFor(id));else {const u=await store.get('users',id),m=u?.merchantId?await store.get('merchants',id):null;definitions.push({id:'shop-'+digest(id).slice(0,24),name:m?.name||'景泰采购演示店',procurementName:m?.name||'平台采购者（模拟）',regionLabel:m?.region||'甘肃 · 景泰',description:'模拟采购者资料。商品货源、价格与履约均用于开发验证。'});}}const result=buildStorefront(await media.productDTOs(rows),definitions,updatedAt);const byId=new Map(definitions.map(row=>[row.id,row]));result.shops=result.shops.map(shop=>{const profile=byId.get(shop.id);if(!profile||!shops)return shop;return {...shop,image:profile.image,serviceNote:profile.serviceNote,...profile.imageMediaId?{imageMediaId:profile.imageMediaId}:{},...profile.imageUrl?{imageUrl:profile.imageUrl,imageExpiresAt:profile.imageExpiresAt}:{},...profile.mediaUnavailable?{mediaUnavailable:true}:{}};});result.updatedAt=definitions.reduce((latest,row)=>row.updatedAt&&(!latest||row.updatedAt>latest)?row.updatedAt:latest,result.updatedAt);return result;
   }
   if(!path.startsWith('/admin/products')&&!path.startsWith('/admin/inventory')&&path!=='/admin/seed')return null;
   const user=await auth.identity(store,event,caller);C.requirePermission(user,'products');
