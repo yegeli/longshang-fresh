@@ -14,4 +14,15 @@ const provision = createProvision({
   },
   getDatabase: () => cloud.database({ throwOnNotFound: false })
 });
-exports.main = async event => provision(event);
+exports.main = async event => {
+  // wx.cloud.callFunction adds userInfo/tcbContext to the event. Ignore these
+  // transport fields; only getWXContext() above supplies trusted identity.
+  // Keep every other field for the strict application request validator.
+  if (event && typeof event === 'object' && !Array.isArray(event) && Object.getPrototypeOf(event) === Object.prototype && (Object.prototype.hasOwnProperty.call(event, 'userInfo') || Object.prototype.hasOwnProperty.call(event, 'tcbContext'))) {
+    const request = {...event};
+    delete request.userInfo;
+    delete request.tcbContext;
+    return provision(request);
+  }
+  return provision(event);
+};
