@@ -1,7 +1,7 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
 const { manifest, digest, schemaVersion, manifestHash, markerKey, matchesMarker } = require('./contract');
-const { marketRuntime } = require('./runtime');
+const { functionRuntime } = require('./runtime');
 const META = 'lsf_meta';
 const LEASE_MS = 6000;
 const INVOCATION_BUDGET_MS = 2200;
@@ -22,12 +22,22 @@ function sameKeys(actual, expected) {
   return Array.isArray(actual) && actual.length === expected.length && actual.every((item, i) => item.Name === expected[i].Name && String(item.Direction) === expected[i].Direction);
 }
 function matchingIndex(index, expected) { return !unique(index.Unique) && sameKeys(index.Keys, expectedKeys(expected)); }
+function builtInIndex(index) {
+  const field = index.Name === '_id_' ? '_id' : index.Name === '_openid_1' ? '_openid' : null;
+  if (!field || !sameKeys(index.Keys, [{Name:field,Direction:'1'}])) return false;
+  // Actual WeChat DescribeTable reports both built-ins as Unique:false. This
+  // metadata is not the document API's _id uniqueness guarantee. Accept only
+  // the observed non-sparse, unfiltered form, plus the older unique _id form.
+  const wechat = index.Unique === false && index.Sparse === false && index.PartialFilterExpression === '';
+  const legacyId = field === '_id' && unique(index.Unique) && (index.Sparse === undefined || index.Sparse === false) && (index.PartialFilterExpression === undefined || index.PartialFilterExpression === '');
+  return wechat || legacyId;
+}
 function validateIndexes(collection, info) {
   if (!info || !Array.isArray(info.Indexes)) reject(409, 'collection_structure_unknown', '集合索引结构无法确认；未覆盖已有结构。');
   const wanted = manifest.indexes.filter(item => item.collection === collection);
   for (const index of info.Indexes) {
-    const isId = index.Name === '_id_' && sameKeys(index.Keys, [{Name:'_id',Direction:'1'}]) && unique(index.Unique);
-    if (!isId && !wanted.some(item => matchingIndex(index, item))) reject(409, 'collection_structure_unknown', '已有集合包含预期之外的索引；请管理员核对，不自动删除或重建。');
+    const builtinName = index.Name === '_id_' || index.Name === '_openid_1';
+    if (builtinName ? !builtInIndex(index) : !wanted.some(item => matchingIndex(index, item))) reject(409, 'collection_structure_unknown', '已有集合包含预期之外的索引；请管理员核对，不自动删除或重建。');
     if (wanted.some(item => index.Name === indexName(item) && !matchingIndex(index, item))) reject(409, 'index_conflict', '索引同名但结构不同；本次没有覆盖。');
   }
   return wanted.filter(item => !info.Indexes.some(index => matchingIndex(index, item)));
@@ -48,7 +58,7 @@ function createProvision({getContext,getConfig,createManager,getDatabase,now=()=
   const step=async(name,target,action)=>{operation=name;collection=target;return action();};
   const reply=(state,extra={})=>({status:200,body:{ready:false,needsRetry:true,dryRun:false,manifestHash,progress:{phase:state?.phase||'bootstrap',collection:state?collectionOrder[state.cursor]:META,action:state?.action||'create-meta',version:state?.version||0},...extra}});
   try {
-   if(!plain(event)||Object.keys(event).some(key=>!['operation','apply'].includes(key))||event.operation!==undefined&&!['identity','inspect','provision','runtime-inspect','runtime-configure'].includes(event.operation)||event.apply!==undefined&&typeof event.apply!=='boolean'||event.operation==='identity'&&event.apply!==undefined||event.apply===true&&!['provision','runtime-configure'].includes(event.operation))reject(400,'invalid_request','仅支持受控身份、初始化和商城运行配置操作；客户端不能选择目标、数值、集合、阶段、身份或权限。');
+   if(!plain(event)||Object.keys(event).some(key=>!['operation','apply'].includes(key))||event.operation!==undefined&&!['identity','inspect','provision','runtime-inspect','runtime-configure','provision-runtime-inspect','provision-runtime-configure'].includes(event.operation)||event.apply!==undefined&&typeof event.apply!=='boolean'||event.operation==='identity'&&event.apply!==undefined||event.apply===true&&!['provision','runtime-configure','provision-runtime-configure'].includes(event.operation))reject(400,'invalid_request','仅支持受控身份、初始化和运行配置操作；客户端不能选择目标、数值、集合、阶段、身份或权限。');
    let config;try{config=getConfig();}catch{reject(503,'provision_unconfigured','初始化函数配置无效。');}
    const context=getContext();
    if(!config||!/^wx[a-f0-9]{16}$/.test(config.WECHAT_APP_ID||'')||!context||context.APPID!==config.WECHAT_APP_ID||typeof context.OPENID!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(context.OPENID))reject(401,'wechat_context_invalid','请从对应小程序以本人微信调用。');
@@ -57,7 +67,7 @@ function createProvision({getContext,getConfig,createManager,getDatabase,now=()=
    if(event.operation==='identity')return {status:200,body:{accountId}};
    if(!validAccount(config.PROVISION_OPERATOR_ACCOUNT_ID))reject(403,'operator_unconfigured','请先核对 identity 并在服务端配置初始化操作者。');
    if(accountId!==config.PROVISION_OPERATOR_ACCOUNT_ID)reject(403,'operator_forbidden','当前微信账号不是初始化操作者。');
-   if(event.operation==='runtime-inspect'||event.operation==='runtime-configure')return await marketRuntime({operation:event.operation,apply:event.apply,envId:config.CLOUDBASE_ENV_ID,createManager,step,reject});
+   if(['runtime-inspect','runtime-configure','provision-runtime-inspect','provision-runtime-configure'].includes(event.operation))return await functionRuntime({operation:event.operation,apply:event.apply,envId:config.CLOUDBASE_ENV_ID,createManager,step,reject});
    if(JSON.stringify(manifest.collections)!==JSON.stringify(COLLECTION_NAMES)||manifest.clientRules.read!==false||manifest.clientRules.write!==false||manifest.indexes.some(item=>!COLLECTION_NAMES.includes(item.collection)))reject(503,'manifest_invalid','部署集合清单无效。');
    const appId=config.WECHAT_APP_ID,envId=config.CLOUDBASE_ENV_ID,apply=event.operation==='provision'&&event.apply===true;
    const db=getDatabase(),doc=(database,name)=>database.collection(META).doc(markerKey(name));

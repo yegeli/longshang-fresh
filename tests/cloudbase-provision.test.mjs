@@ -6,19 +6,24 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {MemoryCloudbaseDB} from './fixtures/cloudbase-db.mjs';
 const require=createRequire(import.meta.url);
-const {createProvision,indexName,LEASE_MS,INVOCATION_BUDGET_MS,VERIFY_WINDOW_MS}=require('../cloudfunctions/provision/lib/provision');
+const {createProvision,indexName,validateIndexes,LEASE_MS,INVOCATION_BUDGET_MS,VERIFY_WINDOW_MS}=require('../cloudfunctions/provision/lib/provision');
 const {manifest,manifestHash,canonicalManifest,digest,markerKey}=require('../cloudfunctions/provision/lib/contract');
 const {runtimeConfig}=require('../cloudfunctions/provision/lib/config');
 const APPID='wx1111111111111111',ENV_ID='cloud1-test-environment';
 const account=openid=>'wechat:'+digest(APPID+'\0'+openid);
 const copy=value=>structuredClone(value);
 const idIndex=()=>({Name:'_id_',Unique:true,Keys:[{Name:'_id',Direction:'1'}]});
+const wechatIndexes=()=>[
+ {Name:'_openid_1',Keys:[{Name:'_openid',Direction:'1'}],Unique:false,Sparse:false,PartialFilterExpression:''},
+ {Name:'_id_',Keys:[{Name:'_id',Direction:'1'}],Unique:false,Sparse:false,PartialFilterExpression:''}
+];
 function fixture({operator=true}={}) {
   const memory=new MemoryCloudbaseDB(),tables=new Map(),calls=[];
   let time=Date.parse('2026-11-03T03:00:00.000Z');
   const config={WECHAT_APP_ID:APPID,CLOUDBASE_ENV_ID:ENV_ID,...(operator?{PROVISION_OPERATOR_ACCOUNT_ID:account('operator')}:{})};
   const context={APPID,OPENID:'operator',ENV:ENV_ID};
   const state={memory,tables,calls,config,context,hook:null,dbCalls:0,managerCreations:0,created:[],indexWrites:[],runtimeWrites:[],runtimeInfo:{FunctionName:'longshang-market',Timeout:3,Status:'Active',MemorySize:128,Role:'PRIVATE_ROLE',Environment:{Variables:[{Key:'PRIVATE_KEY',Value:'SECRET_TOKEN'}]},CodeInfo:'PRIVATE_CODE'},envInfo:{EnvInfo:{EnvId:ENV_ID,Databases:[{Status:'RUNNING',InstanceId:'tnt-example'}]}}};
+  state.provisionRuntimeInfo={...copy(state.runtimeInfo),FunctionName:'longshang-provision'};
   // Model the SDK boundary: all real reads include _id, while doc.set may not
   // write it, including a read/spread/set cycle inside a transaction.
   const boundary=database=>({
@@ -41,13 +46,15 @@ function fixture({operator=true}={}) {
     const {Action,Param}=request;calls.push(copy(request));await state.hook?.(request);
     assert.equal(Param.EnvId,ENV_ID);
     if(Action==='GetFunction'){
-      assert.deepEqual(Param,{EnvId:ENV_ID,FunctionName:'longshang-market'});
-      return copy(state.runtimeInfo);
+      assert.ok(['longshang-market','longshang-provision'].includes(Param.FunctionName));
+      assert.deepEqual(Param,{EnvId:ENV_ID,FunctionName:Param.FunctionName});
+      return copy(Param.FunctionName==='longshang-market'?state.runtimeInfo:state.provisionRuntimeInfo);
     }
     if(Action==='UpdateFunctionConfiguration'){
-      assert.deepEqual(Param,{EnvId:ENV_ID,FunctionName:'longshang-market',Timeout:30});
+      assert.ok(['longshang-market','longshang-provision'].includes(Param.FunctionName));
+      assert.deepEqual(Param,{EnvId:ENV_ID,FunctionName:Param.FunctionName,Timeout:Param.FunctionName==='longshang-market'?30:15});
       state.runtimeWrites.push(copy(request));
-      if(!state.delayRuntime)state.runtimeInfo.Timeout=30;
+      if(!state.delayRuntime)(Param.FunctionName==='longshang-market'?state.runtimeInfo:state.provisionRuntimeInfo).Timeout=Param.Timeout;
       return {};
     }
     const name=Param.TableName||Param.CollectionName;
@@ -56,7 +63,7 @@ function fixture({operator=true}={}) {
     if(Action==='CreateTable'){
       assert.deepEqual(Param,{EnvId:ENV_ID,TableName:name,PermissionInfo:{EnvId:ENV_ID,AclTag:'ADMINONLY'}});
       if(table)throw Object.assign(Error('already exists'),{code:'ResourceUnavailable.ResourceExist'});
-      tables.set(name,{acl:'ADMINONLY',rule:'ADMINONLY',Indexes:[idIndex()]});state.created.push(name);if(state.throwAfterCreate){state.throwAfterCreate=false;throw Object.assign(Error('SECRET_TOKEN lost response'),{code:'InternalError'});}return {};
+      tables.set(name,{acl:'ADMINONLY',rule:'ADMINONLY',Indexes:wechatIndexes()});state.created.push(name);if(state.throwAfterCreate){state.throwAfterCreate=false;throw Object.assign(Error('SECRET_TOKEN lost response'),{code:'InternalError'});}return {};
     }
     if(!table)throw Object.assign(Error('missing table'),{code:'ResourceNotFound.Table'});
     if(Action==='DescribeTable')return {Indexes:copy(table.Indexes)};
@@ -73,7 +80,7 @@ function fixture({operator=true}={}) {
   }};
   const invoke=createProvision({getConfig:()=>config,getContext:()=>context,createManager:id=>{assert.equal(id,ENV_ID);state.managerCreations++;return {commonService:(service,version)=>{assert.equal(service,'tcb');assert.equal(version,'2018-06-08');return common;},env:{getEnvInfo:async()=>copy(state.envInfo)}};},getDatabase:()=>db,now:()=>time});
   state.invoke=async event=>{const before=calls.length;const result=await invoke(event);assert.ok(calls.length-before<=2,'Each invocation uses at most two control-plane requests');return result;};
-  state.addTable=(name,{acl='ADMINONLY',rule=acl,indexes=[idIndex()]}={})=>tables.set(name,{acl,rule,Indexes:copy(indexes)});
+  state.addTable=(name,{acl='ADMINONLY',rule=acl,indexes=wechatIndexes()}={})=>tables.set(name,{acl,rule,Indexes:copy(indexes)});
   state.advance=ms=>{time+=ms;};
   state.marker=name=>memory.read('lsf_meta',markerKey(name));
   return state;
@@ -93,8 +100,8 @@ test('trusted application, environment and exact operator binding precede all re
  const f=fixture();f.context.OPENID='buyer';assert.equal((await f.invoke(apply)).body.error.code,'operator_forbidden');f.context.OPENID='operator';f.context.ENV='other-env';assert.equal((await f.invoke(apply)).body.error.code,'environment_mismatch');f.context.ENV=ENV_ID;f.context.APPID='wx2222222222222222';assert.equal((await f.invoke(apply)).body.error.code,'wechat_context_invalid');assert.equal(f.managerCreations,0);
 });
 test('runtime actions require the same trusted app, environment and exact operator before resource access',async()=>{
- for(const operation of ['runtime-inspect','runtime-configure']){
-  const f=fixture({operator:false}),event={operation,...(operation==='runtime-configure'?{apply:true}:{})};
+ for(const operation of ['runtime-inspect','runtime-configure','provision-runtime-inspect','provision-runtime-configure']){
+  const f=fixture({operator:false}),event={operation,...(operation.endsWith('configure')?{apply:true}:{})};
   assert.equal((await f.invoke(event)).body.error.code,'operator_unconfigured');
   f.config.PROVISION_OPERATOR_ACCOUNT_ID=account('operator');f.context.OPENID='buyer';assert.equal((await f.invoke(event)).body.error.code,'operator_forbidden');
   f.context.OPENID='operator';f.context.APPID='wx2222222222222222';assert.equal((await f.invoke(event)).body.error.code,'wechat_context_invalid');
@@ -104,8 +111,8 @@ test('runtime actions require the same trusted app, environment and exact operat
 });
 test('runtime operation target, timeout and privilege fields cannot be supplied by clients',async()=>{
  const f=fixture();
- for(const extra of [{name:'another-function'},{functionName:'longshang-market'},{timeout:30},{Timeout:30},{envId:ENV_ID},{role:'admin'},{memorySize:256},{envVariables:{}}])assert.equal((await f.invoke({operation:'runtime-configure',apply:true,...extra})).status,400);
- assert.equal((await f.invoke({operation:'runtime-inspect',apply:true})).status,400);assert.equal(f.calls.length,0);assert.equal(f.dbCalls,0);
+ for(const operation of ['runtime-configure','provision-runtime-configure'])for(const extra of [{name:'another-function'},{functionName:'longshang-market'},{timeout:30},{Timeout:30},{envId:ENV_ID},{role:'admin'},{memorySize:256},{envVariables:{}}])assert.equal((await f.invoke({operation,apply:true,...extra})).status,400);
+ for(const operation of ['runtime-inspect','provision-runtime-inspect'])assert.equal((await f.invoke({operation,apply:true})).status,400);assert.equal(f.calls.length,0);assert.equal(f.dbCalls,0);
 });
 test('runtime inspection and configure without explicit apply are read-only and expose only an allowlist',async()=>{
  const f=fixture();
@@ -122,6 +129,19 @@ test('runtime configure changes only the fixed timeout and requires a later acti
  assert.deepEqual(f.calls.map(c=>c.Action),['GetFunction','UpdateFunctionConfiguration']);assert.deepEqual(f.runtimeInfo,{...before,Timeout:30});
  const inspected=await f.invoke({operation:'runtime-inspect'});assert.equal(inspected.body.configured,true);assert.equal(inspected.body.verificationSnapshot,true);
  assert.equal((await f.invoke({operation:'runtime-configure',apply:true})).body.configured,true);assert.equal(f.runtimeWrites.length,1);assert.equal(f.dbCalls,0);
+});
+test('provision runtime targets only its own fixed 15 seconds with explicit apply and Active readback',async()=>{
+ const f=fixture(),marketBefore=copy(f.runtimeInfo),provisionBefore=copy(f.provisionRuntimeInfo);
+ for(const event of [{operation:'provision-runtime-inspect'},{operation:'provision-runtime-configure'},{operation:'provision-runtime-configure',apply:false}]){
+  const result=await f.invoke(event);assert.equal(result.status,200);assert.equal(result.body.dryRun,true);assert.deepEqual(result.body.runtime,{functionName:'longshang-provision',timeoutSeconds:3,targetTimeoutSeconds:15,active:true});
+ }
+ assert.equal(f.runtimeWrites.length,0);
+ const applied=await f.invoke({operation:'provision-runtime-configure',apply:true});assert.equal(applied.body.configured,false);assert.equal(applied.body.needsVerification,true);
+ assert.deepEqual(f.provisionRuntimeInfo,{...provisionBefore,Timeout:15});assert.deepEqual(f.runtimeInfo,marketBefore);
+ f.provisionRuntimeInfo.Status='Updating';assert.equal((await f.invoke({operation:'provision-runtime-inspect'})).body.configured,false);
+ assert.equal((await f.invoke({operation:'provision-runtime-configure',apply:true})).body.error.code,'function_not_active');assert.equal(f.runtimeWrites.length,1);
+ f.provisionRuntimeInfo.Status='Active';assert.equal((await f.invoke({operation:'provision-runtime-inspect'})).body.configured,true);
+ assert.equal((await f.invoke({operation:'provision-runtime-configure',apply:true})).body.configured,true);assert.equal(f.runtimeWrites.length,1);assert.equal(f.dbCalls,0);
 });
 test('runtime updating or unverified provider output never reports readiness or blindly resubmits',async()=>{
  const f=fixture();f.delayRuntime=true;await f.invoke({operation:'runtime-configure',apply:true});
@@ -171,6 +191,14 @@ test('each call checks current META safety and every collection has both final A
 });
 test('unknown indexes fail without deleting or rebuilding existing definitions',async()=>{
  const f=fixture();const item=manifest.indexes[0];f.addTable(item.collection,{indexes:[idIndex(),{Name:'foreign',Unique:false,Keys:[{Name:'foreign',Direction:'1'}]}]});await until(f,s=>s?.cursor===3&&s.action==='describe');const result=await f.invoke(apply);assert.equal(result.status,409);assert.equal(result.body.error.code,'collection_structure_unknown');assert.equal(f.marker('provision-ready'),null);assert.equal(f.indexWrites.length,0);
+});
+test('actual WeChat built-in index metadata is accepted only with the exact known key and flag shapes',()=>{
+ assert.deepEqual(validateIndexes('lsf_meta',{Indexes:wechatIndexes()}),[]);
+ assert.deepEqual(validateIndexes('lsf_meta',{Indexes:[idIndex()]}),[],'Preserve the former unique _id metadata form');
+ for(const base of wechatIndexes())for(const patch of [{Name:'foreign'},{Keys:[{Name:'foreign',Direction:'1'}]},{Keys:[{Name:base.Keys[0].Name,Direction:'-1'}]},{Sparse:true},{PartialFilterExpression:'{"foreign":true}'},{Unique:'false'},...(base.Name==='_openid_1'?[{Unique:true}]:[])])
+  assert.throws(()=>validateIndexes('lsf_meta',{Indexes:[{...base,...patch}]}),error=>error.code==='collection_structure_unknown');
+ const withoutFlags={...wechatIndexes()[1]};delete withoutFlags.Sparse;assert.throws(()=>validateIndexes('lsf_meta',{Indexes:[withoutFlags]}),error=>error.code==='collection_structure_unknown');
+ assert.throws(()=>validateIndexes('lsf_meta',{Indexes:[...wechatIndexes(),{Name:'extra',Unique:false,Keys:[{Name:'foreign',Direction:'1'}]}]}),error=>error.code==='collection_structure_unknown');
 });
 test('lost index-write response recovers from persisted intent and never repeats the destructive request',async()=>{
  const f=fixture();await until(f,s=>s?.action==='index-write');f.throwAfterIndex=true;const failed=await f.invoke(apply);assert.equal(failed.status,503);assert.ok(!JSON.stringify(failed).includes('SECRET_TOKEN'));assert.equal(f.marker('provision-state').action,'index-recover');const before=f.indexWrites.length;
